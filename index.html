@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Sistema de gestión y trazabilidad de flota vehicular" />
+  <title>FleetGuard | Gestión Vehicular</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <section class="auth-screen" id="authScreen" aria-label="Inicio de sesión">
+    <div class="auth-shell">
+
+      <div class="auth-panel">
+        <div class="auth-form-wrap">
+          <div class="auth-mobile-brand">
+            <div class="brand-mark">FG</div>
+            <strong>FleetGuard</strong>
+          </div>
+          <p class="auth-eyebrow">ACCESO AUTORIZADO</p>
+          <h2>Iniciar sesión</h2>
+          <p class="auth-description">Ingresa con el usuario creado en Supabase.</p>
+
+          <div class="config-warning" id="configWarning" hidden>
+            <strong>Falta configurar Supabase</strong>
+            <span>Completa <code>supabase-config.js</code> con la URL y la Publishable Key del proyecto.</span>
+          </div>
+
+          <form id="loginForm" class="login-form">
+            <label>
+              Correo electrónico
+              <input id="loginEmail" name="email" type="email" autocomplete="username" placeholder="usuario@empresa.com" required />
+            </label>
+            <label>
+              Contraseña
+              <div class="password-field">
+                <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Tu contraseña" required minlength="6" />
+                <button type="button" id="togglePassword" class="password-toggle" aria-label="Mostrar contraseña">Ver</button>
+              </div>
+            </label>
+            <p class="auth-message" id="authMessage" role="alert" aria-live="polite"></p>
+            <button class="primary-button login-button" id="loginButton" type="submit">Ingresar a FleetGuard</button>
+          </form>
+
+          <div class="auth-help">
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="app-shell" id="appShell" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">FG</div>
+        <div>
+          <strong>FleetGuard</strong>
+          <span>Gestión vehicular</span>
+        </div>
+      </div>
+
+      <nav class="nav-menu" aria-label="Navegación principal">
+        <button class="nav-item active" data-view="dashboard"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/dasboard.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>PA</span></span> Panel principal</button>
+        <button class="nav-item" data-view="vehicles"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/unidades.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>UN</span></span> Unidades</button>
+        <button class="nav-item" data-view="drivers"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/conductor.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>CO</span></span> Conductores</button>
+        <button class="nav-item" data-view="assignments"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/asignar.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>AS</span></span> Asignaciones</button>
+        <button class="nav-item" data-view="documents"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/documento.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>DO</span></span> Documentos</button>
+        <button class="nav-item" data-view="incidents"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/incidente.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>IN</span></span> Incidentes</button>
+        <button class="nav-item" data-view="maintenance"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/mantenimiento.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>MA</span></span> Mantenimiento</button>
+        <button class="nav-item" data-view="returns"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/devolucion.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>DE</span></span> Devoluciones</button>
+        <button class="nav-item" data-view="reports"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/reportes.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>RE</span></span> Reportes</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sync-status"><span class="dot"></span> <span id="connectionStatus">Supabase conectado</span></div>
+        <small id="dataModeLabel">Datos demostrativos</small>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="icon-button textual-button mobile-only" id="menuToggle" aria-label="Abrir menú">Menú</button>
+          <div>
+            <p class="eyebrow" id="pageEyebrow">Resumen general</p>
+            <h1 id="pageTitle">Panel principal</h1>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <div class="global-search-wrap">
+            <label class="search-box">
+              <span class="search-prefix icon-chip small-chip"><img class="icon-chip-image" src="assets/icons/buscar.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="icon-chip-fallback" hidden>BUS</span></span>
+              <input id="globalSearch" type="search" placeholder="Buscar en todo FleetGuard" autocomplete="off" />
+            </label>
+            <div class="search-results" id="globalSearchResults" hidden></div>
+          </div>
+          <button class="icon-button textual-button notification-button" id="notificationButton" type="button" aria-expanded="false" aria-controls="notificationPanel">
+            <span class="topbar-alert-icon"><img src="assets/icons/alerta.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="topbar-alert-code" hidden>AL</span></span><span>Alertas</span><span class="notification-badge" id="notificationBadge">0</span>
+          </button>
+          <div class="user-chip">
+            <div class="avatar" id="currentUserInitials">US</div>
+            <div>
+              <strong id="currentUserName">Usuario</strong>
+              <span id="currentUserRole">Cargando perfil...</span>
+            </div>
+          </div>
+          <button class="icon-button textual-button logout-button" id="logoutButton" type="button" title="Cerrar sesión" aria-label="Cerrar sesión">Salir</button>
+        </div>
+        <aside class="notification-panel" id="notificationPanel" aria-label="Alertas del sistema" hidden>
+          <div class="notification-panel-header">
+            <div>
+              <p class="panel-kicker">Seguimiento</p>
+              <h2>Alertas pendientes</h2>
+            </div>
+            <button class="secondary-button compact-button" id="closeNotificationPanel" type="button">Cerrar</button>
+          </div>
+          <div class="notification-list" id="notificationList"></div>
+        </aside>
+      </header>
+
+      <section id="dashboard" class="view active">
+        <div class="hero-card">
+          <div>
+            <span class="hero-pill">CONTROL OPERATIVO</span>
+            <h2>Tu flota, documentos y asignaciones en un solo lugar.</h2>
+            <p>Controla cada unidad desde su entrega hasta la devolución, con historial completo de conductores, incidentes, gastos y mantenimiento.</p>
+            <div class="hero-actions">
+              <button class="primary-button" data-open-modal="vehicleModal">+ Registrar unidad</button>
+              <button class="secondary-button" data-view-target="assignments">Ver asignaciones</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stats-grid" id="statsGrid"></div>
+
+        <div class="dashboard-grid">
+          <article class="panel span-2">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Operación actual</p>
+                <h3>Estado de la flota</h3>
+              </div>
+              <button class="text-button" data-view-target="vehicles">Ver todas</button>
+            </div>
+            <div class="fleet-distribution" id="fleetDistribution"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Vencimientos</p>
+                <h3>Alertas documentarias</h3>
+              </div>
+              <span class="counter-badge" id="documentAlertCount">0</span>
+            </div>
+            <div class="alert-list" id="documentAlerts"></div>
+          </article>
+
+          <article class="panel span-2">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Últimos movimientos</p>
+                <h3>Asignaciones recientes</h3>
+              </div>
+              <button class="text-button" data-view-target="assignments">Historial completo</button>
+            </div>
+            <div class="table-wrap compact-table">
+              <table>
+                <thead>
+                  <tr><th>Unidad</th><th>Conductor</th><th>Team</th><th>Fecha</th><th>Estado</th></tr>
+                </thead>
+                <tbody id="recentAssignmentsTable"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Actividad</p>
+                <h3>Gastos mensuales</h3>
+              </div>
+              <span class="amount">S/ 8,940</span>
+            </div>
+            <div class="mini-chart" id="expenseChart"></div>
+            <div class="chart-legend">
+              <span><i class="legend-dot blue"></i> Mantenimiento</span>
+              <span><i class="legend-dot cyan"></i> Alquiler</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="vehicles" class="view">
+        <div class="section-toolbar">
+          <div>
+            <p class="section-description">Registro maestro de unidades propias y alquiladas.</p>
+          </div>
+          <div class="toolbar-actions">
+            <input id="vehicleSearch" class="control module-search" type="search" placeholder="Buscar unidad" />
+            <select id="vehicleStatusFilter" class="control"><option value="all">Todos los estados</option></select>
+            <button class="primary-button" data-open-modal="vehicleModal">+ Nueva unidad</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Unidad</th><th>Tipo</th><th>Propiedad</th><th>Ubicación</th><th>Odómetro</th><th>Estado</th><th>Acciones</th></tr></thead>
+              <tbody id="vehiclesTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="drivers" class="view">
+        <div class="section-toolbar">
+          <p class="section-description">Conductores habilitados y vencimientos de licencia.</p>
+          <div class="toolbar-actions">
+            <input id="driverSearch" class="control module-search" type="search" placeholder="Buscar conductor" />
+            <button class="primary-button" data-open-modal="driverModal">+ Nuevo conductor</button>
+          </div>
+        </div>
+        <div class="cards-grid" id="driversGrid"></div>
+      </section>
+
+      <section id="assignments" class="view">
+        <div class="section-toolbar">
+          <p class="section-description">Historial de entrega, uso y devolución por conductor.</p>
+          <button class="primary-button" data-open-modal="assignmentModal">+ Nueva asignación</button>
+        </div>
+        <div class="panel">
+          <div class="filter-row">
+            <input id="assignmentSearch" class="control" placeholder="Buscar por placa o conductor" />
+            <select id="assignmentStatusFilter" class="control"><option value="all">Todos los estados</option><option>Activa</option><option>Cerrada</option><option>Pendiente</option></select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Placa</th><th>Conductor</th><th>DNI</th><th>Team / Zonal</th><th>Entrega</th><th>Odómetro</th><th>Estado</th><th></th></tr></thead>
+              <tbody id="assignmentsTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="documents" class="view">
+        <div class="section-toolbar">
+          <p class="section-description">SOAT, revisión técnica, contratos, facturas y evidencias.</p>
+          <div class="toolbar-actions">
+            <input id="documentSearch" class="control module-search" type="search" placeholder="Buscar documento" />
+            <button class="primary-button" data-open-modal="documentModal">+ Registrar documento</button>
+          </div>
+        </div>
+        <div class="stats-strip" id="documentStats"></div>
+        <div class="panel">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Unidad</th><th>Documento</th><th>Emisión</th><th>Vencimiento</th><th>Archivo</th><th>Estado</th><th></th></tr></thead>
+              <tbody id="documentsTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="incidents" class="view">
+        <div class="section-toolbar">
+          <p class="section-description">Seguimiento de fallas, daños, accidentes y observaciones.</p>
+          <div class="toolbar-actions">
+            <input id="incidentSearch" class="control module-search" type="search" placeholder="Buscar incidente" />
+            <button class="primary-button danger" data-open-modal="incidentModal">+ Reportar incidente</button>
+          </div>
+        </div>
+        <div class="kanban" id="incidentKanban"></div>
+      </section>
+
+      <section id="maintenance" class="view">
+        <div class="section-toolbar">
+          <p class="section-description">Mantenimientos preventivos, correctivos y costos asociados.</p>
+          <div class="toolbar-actions">
+            <input id="maintenanceSearch" class="control module-search" type="search" placeholder="Buscar mantenimiento" />
+            <button class="primary-button" data-open-modal="maintenanceModal">+ Nuevo mantenimiento</button>
+          </div>
+        </div>
+        <div class="maintenance-layout">
+          <div class="panel span-2">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Unidad</th><th>Tipo</th><th>Taller</th><th>Ingreso</th><th>Salida</th><th>Costo</th><th>Estado</th><th>Acciones</th></tr></thead>
+                <tbody id="maintenanceTable"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><div><p class="panel-kicker">Próximos servicios</p><h3>Agenda preventiva</h3></div></div>
+            <div id="maintenanceSchedule" class="timeline"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="returns" class="view">
+        <div class="section-toolbar">
+          <p class="section-description">Control de solicitudes, evidencias y cierre de asignaciones.</p>
+          <div class="toolbar-actions">
+            <input id="returnSearch" class="control module-search" type="search" placeholder="Buscar devolución" />
+            <button class="primary-button" data-open-modal="returnModal">+ Registrar devolución</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div id="returnsList" class="returns-list"></div>
+        </div>
+      </section>
+
+      <section id="reports" class="view">
+        <div class="section-toolbar">
+          <p class="section-description">Reportes corporativos listos para entregar al cliente.</p>
+          <button class="primary-button" id="exportButton">Descargar reporte general PDF</button>
+        </div>
+        <div class="report-grid">
+          <article class="panel report-card"><span class="report-code">INV</span><h3>Inventario de unidades</h3><p>Estado, propiedad, ubicación y kilometraje.</p><button class="secondary-button" data-export-pdf="vehicles">Descargar</button></article>
+          <article class="panel report-card"><span class="report-code">ASI</span><h3>Historial de asignaciones</h3><p>Conductor, team, zonal, entrega y devolución.</p><button class="secondary-button" data-export-pdf="assignments">Descargar</button></article>
+          <article class="panel report-card"><span class="report-code">INC</span><h3>Incidentes y gastos</h3><p>Tipo, severidad, solución y costo acumulado.</p><button class="secondary-button" data-export-pdf="incidents">Descargar</button></article>
+          <article class="panel report-card"><span class="report-code">DOC</span><h3>Vencimientos documentarios</h3><p>SOAT, revisión técnica, licencias y contratos.</p><button class="secondary-button" data-export-pdf="documents">Descargar</button></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="vehicleModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-header"><div><p class="panel-kicker">Nueva ficha</p><h2>Registrar unidad</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <form id="vehicleForm" class="form-grid">
+        <label>Placa<input required name="plate" placeholder="ABC-123" maxlength="10" /></label>
+        <label>Marca<input required name="brand" placeholder="Toyota" /></label>
+        <label>Modelo<input required name="model" placeholder="Hilux" /></label>
+        <label>Tipo<select name="type"><option>Camioneta</option><option>Automóvil</option><option>Van</option><option>Camión</option></select></label>
+        <label>Propiedad<select name="ownership"><option>Propia</option><option>Alquilada</option></select></label>
+        <label>Ciudad actual<input required name="city" placeholder="Piura" /></label>
+        <label>Odómetro<input required name="odometer" type="number" min="0" placeholder="45000" /></label>
+        <label>Precio alquiler mensual<input name="rent" type="number" min="0" placeholder="0" /></label>
+        <label class="full">Observaciones<textarea name="notes" placeholder="Condición inicial, accesorios u observaciones"></textarea></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Guardar unidad</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="driverModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-header"><div><p class="panel-kicker">Nuevo registro</p><h2>Registrar conductor</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <form id="driverForm" class="form-grid">
+        <label>Nombres completos<input required name="name" /></label>
+        <label>DNI<input required name="dni" maxlength="8" pattern="[0-9]{8}" /></label>
+        <label>Licencia<input required name="license" /></label>
+        <label>Categoría<input required name="category" placeholder="A-IIb" /></label>
+        <label>Vencimiento<input required name="expiry" type="date" /></label>
+        <label>Team<input required name="team" /></label>
+        <label>Zonal<input required name="zone" /></label>
+        <label>Teléfono<input name="phone" /></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Guardar conductor</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="assignmentModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-header"><div><p class="panel-kicker">Nueva entrega</p><h2>Asignar vehículo</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <form id="assignmentForm" class="form-grid">
+        <label>Unidad<select required name="vehicle" id="assignmentVehicleSelect"></select></label>
+        <label>Conductor<select required name="driver" id="assignmentDriverSelect"></select></label>
+        <label>Fecha de entrega<input required name="date" type="date" /></label>
+        <label>Odómetro de salida<input required name="odometer" type="number" min="0" /></label>
+        <label>Team<input required name="team" /></label>
+        <label>Zonal<input required name="zone" /></label>
+        <label>Lugar de entrega<input required name="location" /></label>
+        <label>Fecha estimada de devolución<input name="expectedReturn" type="date" /></label>
+        <label class="full">Observaciones<textarea name="notes"></textarea></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Crear asignación</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="documentModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-header"><div><p class="panel-kicker">Control documentario</p><h2>Registrar documento</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <form id="documentForm" class="form-grid">
+        <label>Unidad<select required name="vehicle" id="documentVehicleSelect"></select></label>
+        <label>Tipo<select required name="type"><option>SOAT</option><option>Revisión técnica</option><option>Contrato de alquiler</option><option>Factura</option><option>Tarjeta vehicular</option><option>Seguro adicional</option></select></label>
+        <label>Fecha de emisión<input required name="issued" type="date" /></label>
+        <label>Fecha de vencimiento<input required name="expiry" type="date" /></label>
+        <label class="full">Archivo de evidencia<input name="file" type="file" accept=".pdf,image/*" /></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Guardar documento</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="incidentModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-header"><div><p class="panel-kicker">Registro operativo</p><h2>Reportar incidente</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <form id="incidentForm" class="form-grid">
+        <label>Unidad<select required name="vehicle" id="incidentVehicleSelect"></select></label>
+        <label>Tipo<select required name="type"><option>Problema de llantas</option><option>Falla mecánica</option><option>Falla eléctrica</option><option>Choque</option><option>Abolladura o rayón</option><option>Multa o papeleta</option><option>Otro</option></select></label>
+        <label>Fecha<input required name="date" type="date" /></label>
+        <label>Gravedad<select required name="severity"><option>Baja</option><option>Media</option><option>Alta</option><option>Crítica</option></select></label>
+        <label class="full">Descripción<textarea required name="description"></textarea></label>
+        <label class="full">Evidencia<input name="file" type="file" accept="image/*,.pdf" /></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button danger">Registrar incidente</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="maintenanceModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-header"><div><p class="panel-kicker">Orden de trabajo</p><h2>Registrar mantenimiento</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <form id="maintenanceForm" class="form-grid">
+        <label>Unidad<select required name="vehicle" id="maintenanceVehicleSelect"></select></label>
+        <label>Tipo<select name="type"><option>Preventivo</option><option>Correctivo</option><option>Por incidente</option><option>Cambio de aceite</option><option>Cambio de llantas</option></select></label>
+        <label>Taller<input required name="workshop" /></label>
+        <label>Fecha de ingreso<input required name="entry" type="date" /></label>
+        <label>Fecha estimada de salida<input name="exit" type="date" /></label>
+        <label>Costo estimado<input name="cost" type="number" min="0" step="0.01" /></label>
+        <label class="full">Trabajo a realizar<textarea required name="description"></textarea></label>
+        <label class="full">Evidencia o comprobante<input name="file" type="file" accept=".pdf,image/*" /></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Crear orden</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="returnModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-header"><div><p class="panel-kicker">Cierre de uso</p><h2>Registrar devolución</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <form id="returnForm" class="form-grid">
+        <label>Asignación activa<select required name="assignment" id="returnAssignmentSelect"></select></label>
+        <label>Fecha de devolución<input required name="date" type="date" /></label>
+        <label>Odómetro final<input required name="odometer" type="number" min="0" /></label>
+        <label>Lugar de devolución<input required name="location" /></label>
+        <label>Estado general<select name="condition"><option>Conforme</option><option>Con observaciones</option><option>Requiere mantenimiento</option></select></label>
+        <label>Nivel de combustible<select name="fuel"><option>Lleno</option><option>3/4</option><option>1/2</option><option>1/4</option><option>Reserva</option></select></label>
+        <label class="full">Observaciones<textarea name="notes"></textarea></label>
+        <label class="full">Fotos de devolución<input name="files" type="file" accept="image/*" multiple /></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Cerrar asignación</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="detailModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card detail-modal-card">
+      <div class="modal-header">
+        <div><p class="panel-kicker" id="detailEyebrow">Detalle</p><h2 id="detailTitle">Información</h2></div>
+        <button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button>
+      </div>
+      <div id="detailContent" class="detail-content"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="fileViewerModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card file-viewer-card">
+      <div class="modal-header">
+        <div><p class="panel-kicker">Vista de evidencia</p><h2 id="fileViewerTitle">Archivo</h2><p class="file-viewer-name" id="fileViewerName"></p></div>
+        <div class="file-viewer-actions"><a class="secondary-button compact-button" id="fileDownloadButton" href="#" download>Descargar</a><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      </div>
+      <div id="fileViewerContent" class="file-viewer-content"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
+  <script src="app.js"></script>
+  <script>
+    document.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+    });
+    document.addEventListener('keydown', function(e) {
+        // Bloquear F12
+        if (e.key === 'F12' || e.keyCode === 123) {
+            e.preventDefault();
+            return false;
+        }
+        if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.keyCode === 73)) {
+            e.preventDefault();
+            return false;
+        }
+        if (e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j' || e.keyCode === 74)) {
+            e.preventDefault();
+            return false;
+        }
+        if (e.ctrlKey && (e.key === 'U' || e.key === 'u' || e.keyCode === 85)) {
+            e.preventDefault();
+            return false;
+        }
+    });
+    document.addEventListener('selectstart', function(e) {
+        e.preventDefault();
+    });
+    document.addEventListener('dragstart', function(e) {
+        e.preventDefault();
+    });
+</script>
+</body>
+</html>
