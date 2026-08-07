@@ -44,6 +44,8 @@
           </form>
 
           <div class="auth-help">
+            <span>Los usuarios se crean desde Supabase Authentication.</span>
+            <span>No compartas tu contraseña.</span>
           </div>
         </div>
       </div>
@@ -180,7 +182,7 @@
                 <p class="panel-kicker">Actividad</p>
                 <h3>Gastos mensuales</h3>
               </div>
-              <span class="amount">S/ 8,940</span>
+              <span class="amount" id="expenseTotal">S/ 0.00</span>
             </div>
             <div class="mini-chart" id="expenseChart"></div>
             <div class="chart-legend">
@@ -346,8 +348,9 @@
   <div class="modal" id="driverModal" aria-hidden="true">
     <div class="modal-backdrop" data-close-modal></div>
     <div class="modal-card">
-      <div class="modal-header"><div><p class="panel-kicker">Nuevo registro</p><h2>Registrar conductor</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <div class="modal-header"><div><p class="panel-kicker" id="driverModalKicker">Nuevo registro</p><h2 id="driverModalTitle">Registrar conductor</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
       <form id="driverForm" class="form-grid">
+        <input type="hidden" name="editId" id="driverEditId" />
         <label>Nombres completos<input required name="name" /></label>
         <label>DNI<input required name="dni" maxlength="8" pattern="[0-9]{8}" /></label>
         <label>Licencia<input required name="license" /></label>
@@ -356,7 +359,8 @@
         <label>Team<input required name="team" /></label>
         <label>Zonal<input required name="zone" /></label>
         <label>Teléfono<input name="phone" /></label>
-        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Guardar conductor</button></div>
+        <label>Estado<select name="status"><option>Habilitado</option><option>Por vencer</option><option>No habilitado</option><option>Inactivo</option></select></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button" id="driverSubmitButton">Guardar conductor</button></div>
       </form>
     </div>
   </div>
@@ -402,8 +406,12 @@
       <form id="incidentForm" class="form-grid">
         <label>Unidad<select required name="vehicle" id="incidentVehicleSelect"></select></label>
         <label>Tipo<select required name="type"><option>Problema de llantas</option><option>Falla mecánica</option><option>Falla eléctrica</option><option>Choque</option><option>Abolladura o rayón</option><option>Multa o papeleta</option><option>Otro</option></select></label>
-        <label>Fecha<input required name="date" type="date" /></label>
+        <label>Fecha<input required name="date" type="date" id="incidentDateInput" /></label>
         <label>Gravedad<select required name="severity"><option>Baja</option><option>Media</option><option>Alta</option><option>Crítica</option></select></label>
+        <div class="incident-responsible-preview full" id="incidentResponsiblePreview">
+          <span class="preview-label">Responsable en la fecha del incidente</span>
+          <strong>Selecciona una unidad y una fecha.</strong>
+        </div>
         <label class="full">Descripción<textarea required name="description"></textarea></label>
         <label class="full">Evidencia<input name="file" type="file" accept="image/*,.pdf" /></label>
         <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button danger">Registrar incidente</button></div>
@@ -475,35 +483,5 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="supabase-config.js"></script>
   <script src="app.js"></script>
-  <script>
-    document.addEventListener('contextmenu', function(e) {
-        e.preventDefault();
-    });
-    document.addEventListener('keydown', function(e) {
-        // Bloquear F12
-        if (e.key === 'F12' || e.keyCode === 123) {
-            e.preventDefault();
-            return false;
-        }
-        if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.keyCode === 73)) {
-            e.preventDefault();
-            return false;
-        }
-        if (e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j' || e.keyCode === 74)) {
-            e.preventDefault();
-            return false;
-        }
-        if (e.ctrlKey && (e.key === 'U' || e.key === 'u' || e.keyCode === 85)) {
-            e.preventDefault();
-            return false;
-        }
-    });
-    document.addEventListener('selectstart', function(e) {
-        e.preventDefault();
-    });
-    document.addEventListener('dragstart', function(e) {
-        e.preventDefault();
-    });
-</script>
 </body>
 </html>

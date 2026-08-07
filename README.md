@@ -62,3 +62,9 @@ Reemplazar gradualmente `localStorage` por las tablas reales de Supabase, comenz
 - Se eliminó el panel azul izquierdo del login.
 - La vista de acceso quedó solo con formulario de usuario y contraseña.
 - La marca FleetGuard se mantiene arriba del formulario.
+
+
+## Mejoras v9
+- Conductores editables sin alterar los datos históricos ya copiados en las asignaciones.
+- Incidentes identifican y guardan el conductor responsable según la fecha del incidente.
+- Gastos mensuales calculados con costos de mantenimiento registrados y alquiler mensual configurado en unidades alquiladas.

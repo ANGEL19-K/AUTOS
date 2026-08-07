@@ -161,6 +161,20 @@ function saveData() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
+function ensureAssignmentSnapshots() {
+  let changed = false;
+  data.assignments.forEach((assignment) => {
+    const driver = data.drivers.find((item) => item.id === Number(assignment.driverId));
+    if (!assignment.driverNameSnapshot && driver?.name) { assignment.driverNameSnapshot = driver.name; changed = true; }
+    if (!assignment.driverDniSnapshot && driver?.dni) { assignment.driverDniSnapshot = driver.dni; changed = true; }
+    if (!assignment.teamSnapshot) { assignment.teamSnapshot = assignment.team || driver?.team || ''; changed = true; }
+    if (!assignment.zoneSnapshot) { assignment.zoneSnapshot = assignment.zone || driver?.zone || ''; changed = true; }
+  });
+  if (changed) saveData();
+}
+
+ensureAssignmentSnapshots();
+
 
 const FILE_DB_NAME = 'fleetguard-local-files';
 const FILE_DB_VERSION = 1;
@@ -255,6 +269,55 @@ function fileButton(record, label = 'Visualizar archivo') {
 function vehicleById(id) { return data.vehicles.find((v) => v.id === Number(id)); }
 function driverById(id) { return data.drivers.find((d) => d.id === Number(id)); }
 function assignmentById(id) { return data.assignments.find((a) => a.id === Number(id)); }
+
+function assignmentDriverName(assignment) {
+  return assignment?.driverNameSnapshot || driverById(assignment?.driverId)?.name || 'Sin conductor';
+}
+function assignmentDriverDni(assignment) {
+  return assignment?.driverDniSnapshot || driverById(assignment?.driverId)?.dni || 'Sin DNI';
+}
+function assignmentEndDate(assignment) {
+  if (!assignment) return null;
+  if (assignment.returnedAt) return assignment.returnedAt;
+  if (assignment.status === 'Cerrada') return assignment.expectedReturn || assignment.date;
+  return null;
+}
+function findAssignmentAtDate(vehicleId, dateValue) {
+  if (!vehicleId || !dateValue) return null;
+  const date = String(dateValue).slice(0, 10);
+  return [...data.assignments]
+    .filter((assignment) => Number(assignment.vehicleId) === Number(vehicleId))
+    .filter((assignment) => {
+      const start = String(assignment.date || '').slice(0, 10);
+      const end = assignmentEndDate(assignment);
+      return start && date >= start && (!end || date <= String(end).slice(0, 10));
+    })
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0] || null;
+}
+function incidentResponsible(incident) {
+  if (incident?.responsibleName) {
+    return {
+      assignmentId: incident.assignmentId || null,
+      name: incident.responsibleName,
+      dni: incident.responsibleDni || 'Sin DNI',
+      team: incident.responsibleTeam || '',
+      zone: incident.responsibleZone || '',
+      start: incident.assignmentStart || '',
+      end: incident.assignmentEnd || ''
+    };
+  }
+  const assignment = findAssignmentAtDate(incident?.vehicleId, incident?.date);
+  if (!assignment) return null;
+  return {
+    assignmentId: assignment.id,
+    name: assignmentDriverName(assignment),
+    dni: assignmentDriverDni(assignment),
+    team: assignment.teamSnapshot || assignment.team || '',
+    zone: assignment.zoneSnapshot || assignment.zone || '',
+    start: assignment.date || '',
+    end: assignmentEndDate(assignment) || ''
+  };
+}
 function normalize(value = '') {
   return String(value).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 }
@@ -432,14 +495,55 @@ function renderRecentAssignments() {
     .map((assignment) => {
       const vehicle = vehicleById(assignment.vehicleId);
       const driver = driverById(assignment.driverId);
-      return `<tr><td><div class="vehicle-cell"><div class="vehicle-thumb">${iconToken('vehicle', 'UN', 'tiny-chip')}</div><div><strong>${escapeHtml(vehicle?.plate || 'Sin placa')}</strong><span>${escapeHtml(`${vehicle?.brand || ''} ${vehicle?.model || ''}`.trim())}</span></div></div></td><td>${escapeHtml(driver?.name || 'Sin conductor')}</td><td>${escapeHtml(assignment.team)}</td><td>${formatDate(assignment.date)}</td><td><span class="status ${statusClass(assignment.status)}">${escapeHtml(assignment.status)}</span></td></tr>`;
+      return `<tr><td><div class="vehicle-cell"><div class="vehicle-thumb">${iconToken('vehicle', 'UN', 'tiny-chip')}</div><div><strong>${escapeHtml(vehicle?.plate || 'Sin placa')}</strong><span>${escapeHtml(`${vehicle?.brand || ''} ${vehicle?.model || ''}`.trim())}</span></div></div></td><td>${escapeHtml(assignmentDriverName(assignment))}</td><td>${escapeHtml(assignment.teamSnapshot || assignment.team || '')}</td><td>${formatDate(assignment.date)}</td><td><span class="status ${statusClass(assignment.status)}">${escapeHtml(assignment.status)}</span></td></tr>`;
     }).join('');
 }
 
 function renderExpenseChart() {
-  const values = [[45, 67], [58, 40], [72, 55], [48, 76], [81, 60], [64, 86], [91, 68]];
-  const labels = ['Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago'];
-  q('expenseChart').innerHTML = values.map((pair, index) => `<div class="chart-column"><span style="height:${pair[0]}%;background:#164b8f"></span><span style="height:${pair[1]}%;background:#6687a8"></span><small>${labels[index]}</small></div>`).join('');
+  const chart = q('expenseChart');
+  const totalElement = q('expenseTotal');
+  if (!chart || !totalElement) return;
+
+  const now = new Date();
+  const months = [];
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    months.push(new Date(now.getFullYear(), now.getMonth() - offset, 1));
+  }
+
+  const monthlyRent = data.vehicles
+    .filter((vehicle) => vehicle.ownership === 'Alquilada' && Number(vehicle.rent || 0) > 0)
+    .reduce((sum, vehicle) => sum + Number(vehicle.rent || 0), 0);
+
+  const series = months.map((month) => {
+    const key = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}`;
+    const maintenance = data.maintenance
+      .filter((record) => String(record.entry || '').startsWith(key))
+      .reduce((sum, record) => sum + Number(record.cost || 0), 0);
+    return {
+      label: month.toLocaleDateString('es-PE', { month: 'short' }).replace('.', ''),
+      maintenance,
+      rent: monthlyRent
+    };
+  });
+
+  const current = series[series.length - 1] || { maintenance: 0, rent: 0 };
+  totalElement.textContent = money(current.maintenance + current.rent);
+  const maxValue = Math.max(0, ...series.flatMap((item) => [item.maintenance, item.rent]));
+
+  if (maxValue <= 0) {
+    chart.innerHTML = '<div class="expense-empty"><strong>Sin gastos registrados</strong><span>Los valores aparecerán al registrar alquileres o mantenimientos.</span></div>';
+    return;
+  }
+
+  chart.innerHTML = series.map((item) => {
+    const maintenanceHeight = item.maintenance > 0 ? Math.max(6, Math.round((item.maintenance / maxValue) * 100)) : 0;
+    const rentHeight = item.rent > 0 ? Math.max(6, Math.round((item.rent / maxValue) * 100)) : 0;
+    return `<div class="chart-column" title="${escapeHtml(item.label)} · Mantenimiento ${escapeHtml(money(item.maintenance))} · Alquiler ${escapeHtml(money(item.rent))}">
+      <span style="height:${maintenanceHeight}%;background:#164b8f"></span>
+      <span style="height:${rentHeight}%;background:#6687a8"></span>
+      <small>${escapeHtml(item.label)}</small>
+    </div>`;
+  }).join('');
 }
 
 function renderVehicleStatusFilter() {
@@ -475,7 +579,7 @@ function renderDrivers() {
     ? rows.map((driver) => `<article class="driver-card">
       <div class="driver-top"><div class="driver-avatar">${initials(driver.name)}</div><div><h3>${escapeHtml(driver.name)}</h3><p>DNI ${escapeHtml(driver.dni)}</p></div></div>
       <div class="driver-info"><div class="info-box"><span>Licencia</span><strong>${escapeHtml(driver.license)} / ${escapeHtml(driver.category)}</strong></div><div class="info-box"><span>Vencimiento</span><strong>${formatDate(driver.expiry)}</strong></div><div class="info-box"><span>Team</span><strong>${escapeHtml(driver.team)}</strong></div><div class="info-box"><span>Zonal</span><strong>${escapeHtml(driver.zone)}</strong></div></div>
-      <div class="driver-footer"><span class="status ${driver.status === 'Habilitado' ? 'valid' : 'warning'}">${escapeHtml(driver.status)}</span><button class="text-button" type="button" data-detail-type="driver" data-detail-id="${driver.id}">Ver ficha</button></div>
+      <div class="driver-footer"><span class="status ${driver.status === 'Habilitado' ? 'valid' : 'warning'}">${escapeHtml(driver.status)}</span><div class="driver-card-actions"><button class="row-action" type="button" data-edit-driver="${driver.id}">Editar</button><button class="text-button" type="button" data-detail-type="driver" data-detail-id="${driver.id}">Ver ficha</button></div></div>
     </article>`).join('')
     : '<div class="empty-state"><strong>Sin resultados</strong>No se encontraron conductores.</div>';
 }
@@ -493,7 +597,7 @@ function renderAssignments() {
     ? rows.map((assignment) => {
       const vehicle = vehicleById(assignment.vehicleId);
       const driver = driverById(assignment.driverId);
-      return `<tr><td><strong>${escapeHtml(vehicle?.plate || 'Sin placa')}</strong><br><small>${escapeHtml(`${vehicle?.brand || ''} ${vehicle?.model || ''}`.trim())}</small></td><td>${escapeHtml(driver?.name || 'Sin conductor')}</td><td>${escapeHtml(driver?.dni || 'Sin DNI')}</td><td>${escapeHtml(assignment.team)}<br><small>${escapeHtml(assignment.zone)}</small></td><td>${formatDate(assignment.date)}<br><small>${escapeHtml(assignment.location)}</small></td><td>${Number(assignment.odometer).toLocaleString('es-PE')} km</td><td><select class="status-editor" data-status-type="assignment" data-status-id="${assignment.id}">${['Activa','Pendiente','Cerrada'].map((option) => `<option ${assignment.status === option ? 'selected' : ''}>${option}</option>`).join('')}</select></td><td><button class="row-action" type="button" data-detail-type="assignment" data-detail-id="${assignment.id}">Ver historial</button></td></tr>`;
+      return `<tr><td><strong>${escapeHtml(vehicle?.plate || 'Sin placa')}</strong><br><small>${escapeHtml(`${vehicle?.brand || ''} ${vehicle?.model || ''}`.trim())}</small></td><td>${escapeHtml(assignmentDriverName(assignment))}</td><td>${escapeHtml(assignmentDriverDni(assignment))}</td><td>${escapeHtml(assignment.team)}<br><small>${escapeHtml(assignment.zone)}</small></td><td>${formatDate(assignment.date)}<br><small>${escapeHtml(assignment.location)}</small></td><td>${Number(assignment.odometer).toLocaleString('es-PE')} km</td><td><select class="status-editor" data-status-type="assignment" data-status-id="${assignment.id}">${['Activa','Pendiente','Cerrada'].map((option) => `<option ${assignment.status === option ? 'selected' : ''}>${option}</option>`).join('')}</select></td><td><button class="row-action" type="button" data-detail-type="assignment" data-detail-id="${assignment.id}">Ver historial</button></td></tr>`;
     }).join('')
     : '<tr><td colspan="8"><div class="empty-state"><strong>Sin resultados</strong>No hay asignaciones con esos filtros.</div></td></tr>';
 }
@@ -525,7 +629,8 @@ function renderIncidents() {
     });
     return `<section class="kanban-column"><div class="kanban-title"><h3>${title}</h3><span>${items.length}</span></div>${items.map((incident) => {
       const vehicle = vehicleById(incident.vehicleId);
-      return `<article class="incident-card"><span class="tag ${slug(incident.severity)}">${escapeHtml(incident.severity)}</span><h4>${escapeHtml(incident.type)} / ${escapeHtml(vehicle?.plate || 'Sin placa')}</h4><p>${escapeHtml(incident.description)}</p><div class="incident-meta"><span>${formatDate(incident.date)}</span><span>${escapeHtml(vehicle?.city || '')}</span></div><div class="incident-actions"><select class="status-editor" data-status-type="incident" data-status-id="${incident.id}">${['Abierto','En proceso','Cerrado'].map((option) => `<option ${incident.status === option ? 'selected' : ''}>${option}</option>`).join('')}</select><div class="action-stack"><button class="row-action" type="button" data-detail-type="incident" data-detail-id="${incident.id}">Ver detalle</button>${incident.fileStorageKey ? `<button class="row-action" type="button" data-open-file="${escapeHtml(incident.fileStorageKey)}" data-file-title="Evidencia del incidente">Evidencia</button>` : ''}</div></div></article>`;
+      const responsible = incidentResponsible(incident);
+      return `<article class="incident-card"><span class="tag ${slug(incident.severity)}">${escapeHtml(incident.severity)}</span><h4>${escapeHtml(incident.type)} / ${escapeHtml(vehicle?.plate || 'Sin placa')}</h4><p>${escapeHtml(incident.description)}</p>${responsible ? `<div class="incident-responsible-line"><span>Responsable</span><strong>${escapeHtml(responsible.name)}</strong></div>` : `<div class="incident-responsible-line no-assignment"><span>Responsable</span><strong>Sin asignación registrada en esa fecha</strong></div>`}<div class="incident-meta"><span>${formatDate(incident.date)}</span><span>${escapeHtml(vehicle?.city || '')}</span></div><div class="incident-actions"><select class="status-editor" data-status-type="incident" data-status-id="${incident.id}">${['Abierto','En proceso','Cerrado'].map((option) => `<option ${incident.status === option ? 'selected' : ''}>${option}</option>`).join('')}</select><div class="action-stack"><button class="row-action" type="button" data-detail-type="incident" data-detail-id="${incident.id}">Ver detalle</button>${incident.fileStorageKey ? `<button class="row-action" type="button" data-open-file="${escapeHtml(incident.fileStorageKey)}" data-file-title="Evidencia del incidente">Evidencia</button>` : ''}</div></div></article>`;
     }).join('') || '<div class="empty-state">Sin registros</div>'}</section>`;
   }).join('');
 }
@@ -559,7 +664,7 @@ function renderReturns() {
       const assignment = assignmentById(returnItem.assignmentId);
       const vehicle = vehicleById(assignment?.vehicleId);
       const driver = driverById(assignment?.driverId);
-      return `<article class="return-item"><div class="return-icon">${iconToken('return', 'DEV', 'tiny-chip')}</div><div><h4>${escapeHtml(vehicle?.plate || 'Sin placa')} / ${escapeHtml(driver?.name || 'Sin conductor')}</h4><p>${escapeHtml(assignment?.team || '')} / ${escapeHtml(assignment?.zone || '')}</p></div><div class="return-field"><span>Solicitud enviada</span><strong>${formatDate(returnItem.requestDate)}</strong></div><div class="return-field"><span>Fecha límite</span><strong>${formatDate(returnItem.dueDate)}</strong></div><select class="status-editor" data-status-type="return" data-status-id="${returnItem.id}">${['Pendiente','Correo enviado','Confirmado','Reprogramado','Devuelto'].map((option) => `<option ${returnItem.status === option ? 'selected' : ''}>${option}</option>`).join('')}</select><div class="action-stack"><button class="row-action" type="button" data-detail-type="return" data-detail-id="${returnItem.id}">Ver detalle</button>${returnItem.fileStorageKeys?.length ? `<button class="row-action" type="button" data-open-file="${escapeHtml(returnItem.fileStorageKeys[0])}" data-file-title="Evidencia de devolución">Ver foto</button>` : ''}</div></article>`;
+      return `<article class="return-item"><div class="return-icon">${iconToken('return', 'DEV', 'tiny-chip')}</div><div><h4>${escapeHtml(vehicle?.plate || 'Sin placa')} / ${escapeHtml(assignmentDriverName(assignment))}</h4><p>${escapeHtml(assignment?.team || '')} / ${escapeHtml(assignment?.zone || '')}</p></div><div class="return-field"><span>Solicitud enviada</span><strong>${formatDate(returnItem.requestDate)}</strong></div><div class="return-field"><span>Fecha límite</span><strong>${formatDate(returnItem.dueDate)}</strong></div><select class="status-editor" data-status-type="return" data-status-id="${returnItem.id}">${['Pendiente','Correo enviado','Confirmado','Reprogramado','Devuelto'].map((option) => `<option ${returnItem.status === option ? 'selected' : ''}>${option}</option>`).join('')}</select><div class="action-stack"><button class="row-action" type="button" data-detail-type="return" data-detail-id="${returnItem.id}">Ver detalle</button>${returnItem.fileStorageKeys?.length ? `<button class="row-action" type="button" data-open-file="${escapeHtml(returnItem.fileStorageKeys[0])}" data-file-title="Evidencia de devolución">Ver foto</button>` : ''}</div></article>`;
     }).join('')
     : '<div class="empty-state"><strong>Sin resultados</strong>No se encontraron devoluciones.</div>';
 }
@@ -577,7 +682,7 @@ function populateSelects() {
     ? activeAssignments.map((assignment) => {
       const vehicle = vehicleById(assignment.vehicleId);
       const driver = driverById(assignment.driverId);
-      return `<option value="${assignment.id}">${escapeHtml(vehicle?.plate || 'Sin placa')} / ${escapeHtml(driver?.name || 'Sin conductor')}</option>`;
+      return `<option value="${assignment.id}">${escapeHtml(vehicle?.plate || 'Sin placa')} / ${escapeHtml(assignmentDriverName(assignment))}</option>`;
     }).join('')
     : '<option value="">No hay asignaciones activas</option>';
   syncAssignmentDefaults();
@@ -653,11 +758,12 @@ function openDetail(type, id) {
     const item = driverById(id); if (!item) return;
     title = item.name; eyebrow = 'Ficha del conductor';
     content = [detailField('DNI', item.dni), detailField('Licencia', item.license), detailField('Categoría', item.category), detailField('Vencimiento', formatDate(item.expiry)), detailField('Team', item.team), detailField('Zonal', item.zone), detailField('Teléfono', item.phone || 'Sin teléfono'), detailField('Estado', item.status)].join('');
+    actions = `<div class="modal-actions"><button class="primary-button" type="button" data-edit-driver="${item.id}">Editar información</button></div>`;
   } else if (type === 'assignment') {
     const item = assignmentById(id); if (!item) return;
     const vehicle = vehicleById(item.vehicleId); const driver = driverById(item.driverId);
     title = `Asignación ${vehicle?.plate || ''}`; eyebrow = 'Historial de asignación';
-    content = [detailField('Conductor', driver?.name), detailField('DNI', driver?.dni), detailField('Team', item.team), detailField('Zonal', item.zone), detailField('Fecha de entrega', formatDate(item.date)), detailField('Lugar de entrega', item.location), detailField('Odómetro de salida', `${Number(item.odometer).toLocaleString('es-PE')} km`), detailField('Devolución estimada', formatDate(item.expectedReturn)), detailField('Estado', item.status), detailField('Observaciones', item.notes || 'Sin observaciones')].join('');
+    content = [detailField('Conductor', assignmentDriverName(item)), detailField('DNI', assignmentDriverDni(item)), detailField('Team', item.teamSnapshot || item.team), detailField('Zonal', item.zoneSnapshot || item.zone), detailField('Fecha de entrega', formatDate(item.date)), detailField('Lugar de entrega', item.location), detailField('Odómetro de salida', `${Number(item.odometer).toLocaleString('es-PE')} km`), detailField('Devolución estimada', formatDate(item.expectedReturn)), detailField('Estado', item.status), detailField('Observaciones', item.notes || 'Sin observaciones')].join('');
   } else if (type === 'document') {
     const item = data.documents.find((documentItem) => documentItem.id === Number(id)); if (!item) return;
     const vehicle = vehicleById(item.vehicleId);
@@ -668,7 +774,18 @@ function openDetail(type, id) {
     const item = data.incidents.find((incident) => incident.id === Number(id)); if (!item) return;
     const vehicle = vehicleById(item.vehicleId);
     title = item.type; eyebrow = `Incidente / ${vehicle?.plate || 'unidad'}`;
-    content = [detailField('Fecha', formatDate(item.date)), detailField('Gravedad', item.severity), detailField('Estado', item.status), detailField('Ubicación de la unidad', vehicle?.city), detailField('Descripción', item.description), detailField('Solución', item.solution || 'Pendiente')].join('');
+    const responsible = incidentResponsible(item);
+    const responsibleFields = responsible
+      ? [
+          detailField('Conductor responsable', responsible.name),
+          detailField('DNI del responsable', responsible.dni),
+          detailField('Team en la asignación', responsible.team || 'Sin información'),
+          detailField('Zonal en la asignación', responsible.zone || 'Sin información'),
+          detailField('Asignado desde', formatDate(responsible.start)),
+          detailField('Asignación hasta', responsible.end ? formatDate(responsible.end) : 'Asignación aún abierta')
+        ]
+      : [detailField('Conductor responsable', 'Sin asignación registrada para esa fecha')];
+    content = [detailField('Fecha', formatDate(item.date)), detailField('Gravedad', item.severity), detailField('Estado', item.status), detailField('Ubicación de la unidad', vehicle?.city), ...responsibleFields, detailField('Descripción', item.description), detailField('Solución', item.solution || 'Pendiente')].join('');
     actions = item.fileStorageKey ? `<div class="modal-actions"><button class="secondary-button" type="button" data-open-file="${escapeHtml(item.fileStorageKey)}" data-file-title="Evidencia del incidente">Visualizar evidencia</button></div>` : '';
   } else if (type === 'maintenance') {
     const item = data.maintenance.find((maintenance) => maintenance.id === Number(id)); if (!item) return;
@@ -680,7 +797,7 @@ function openDetail(type, id) {
     const item = data.returns.find((returnItem) => returnItem.id === Number(id)); if (!item) return;
     const assignment = assignmentById(item.assignmentId); const vehicle = vehicleById(assignment?.vehicleId); const driver = driverById(assignment?.driverId);
     title = `Devolución ${vehicle?.plate || ''}`; eyebrow = 'Cierre de asignación';
-    content = [detailField('Conductor', driver?.name), detailField('Solicitud', formatDate(item.requestDate)), detailField('Fecha límite', formatDate(item.dueDate)), detailField('Lugar', item.location), detailField('Evidencia de correo', item.emailEvidence ? 'Registrada' : 'Pendiente'), detailField('Estado', item.status)].join('');
+    content = [detailField('Conductor', assignmentDriverName(assignment)), detailField('Solicitud', formatDate(item.requestDate)), detailField('Fecha límite', formatDate(item.dueDate)), detailField('Lugar', item.location), detailField('Evidencia de correo', item.emailEvidence ? 'Registrada' : 'Pendiente'), detailField('Estado', item.status)].join('');
     actions = item.fileStorageKeys?.length ? `<div class="modal-actions"><button class="secondary-button" type="button" data-open-file="${escapeHtml(item.fileStorageKeys[0])}" data-file-title="Evidencia de devolución">Visualizar evidencia</button></div>` : '';
   }
 
@@ -694,7 +811,7 @@ function buildSearchIndex() {
   const items = [];
   data.vehicles.forEach((item) => items.push({ view: 'vehicles', type: 'vehicle', id: item.id, code: 'UN', icon: 'vehicle', label: item.plate, meta: `${item.brand} ${item.model} / ${item.status}`, terms: [item.plate, item.brand, item.model, item.type, item.city, item.status] }));
   data.drivers.forEach((item) => items.push({ view: 'drivers', type: 'driver', id: item.id, code: 'CO', icon: 'driver', label: item.name, meta: `DNI ${item.dni} / ${item.team}`, terms: [item.name, item.dni, item.license, item.team, item.zone] }));
-  data.assignments.forEach((item) => { const vehicle = vehicleById(item.vehicleId); const driver = driverById(item.driverId); items.push({ view: 'assignments', type: 'assignment', id: item.id, code: 'AS', icon: 'assignment', label: `${vehicle?.plate || 'Unidad'} / ${driver?.name || 'Conductor'}`, meta: `${item.team} / ${item.status}`, terms: [vehicle?.plate, driver?.name, driver?.dni, item.team, item.zone, item.status] }); });
+  data.assignments.forEach((item) => { const vehicle = vehicleById(item.vehicleId); const driver = driverById(item.driverId); items.push({ view: 'assignments', type: 'assignment', id: item.id, code: 'AS', icon: 'assignment', label: `${vehicle?.plate || 'Unidad'} / ${assignmentDriverName(item)}`, meta: `${item.teamSnapshot || item.team} / ${item.status}`, terms: [vehicle?.plate, assignmentDriverName(item), assignmentDriverDni(item), item.teamSnapshot || item.team, item.zoneSnapshot || item.zone, item.status] }); });
   data.documents.forEach((item) => { const vehicle = vehicleById(item.vehicleId); items.push({ view: 'documents', type: 'document', id: item.id, code: 'DO', icon: 'document', label: `${item.type} / ${vehicle?.plate || 'Unidad'}`, meta: `${item.status} / ${formatDate(item.expiry)}`, terms: [vehicle?.plate, item.type, item.file, item.status] }); });
   data.incidents.forEach((item) => { const vehicle = vehicleById(item.vehicleId); items.push({ view: 'incidents', type: 'incident', id: item.id, code: 'IN', icon: 'incident', label: `${item.type} / ${vehicle?.plate || 'Unidad'}`, meta: `${item.severity} / ${item.status}`, terms: [vehicle?.plate, item.type, item.description, item.severity, item.status] }); });
   data.maintenance.forEach((item) => { const vehicle = vehicleById(item.vehicleId); items.push({ view: 'maintenance', type: 'maintenance', id: item.id, code: 'MA', icon: 'maintenance', label: `${item.type} / ${vehicle?.plate || 'Unidad'}`, meta: `${item.workshop} / ${item.status}`, terms: [vehicle?.plate, item.type, item.workshop, item.description, item.status] }); });
@@ -754,7 +871,7 @@ function reportDefinition(name) {
   if (name === 'assignments') return {
     title: 'Historial de asignaciones',
     columns: ['Placa','Conductor','DNI','Team','Zonal','Entrega','Estado'],
-    rows: data.assignments.map((item) => { const vehicle=vehicleById(item.vehicleId); const driver=driverById(item.driverId); return [vehicle?.plate || '', driver?.name || '', driver?.dni || '', item.team, item.zone, formatDate(item.date), item.status]; })
+    rows: data.assignments.map((item) => { const vehicle=vehicleById(item.vehicleId); const driver=driverById(item.driverId); return [vehicle?.plate || '', assignmentDriverName(item), assignmentDriverDni(item), item.teamSnapshot || item.team, item.zoneSnapshot || item.zone, formatDate(item.date), item.status]; })
   };
   if (name === 'incidents') return {
     title: 'Incidentes registrados',
@@ -899,10 +1016,64 @@ function updateRecordStatus(type, id, status) {
   toast(`Estado actualizado a ${status}.`);
 }
 
+function resetDriverFormForNew() {
+  const form = q('driverForm');
+  if (!form) return;
+  form.reset();
+  q('driverEditId').value = '';
+  q('driverModalKicker').textContent = 'Nuevo registro';
+  q('driverModalTitle').textContent = 'Registrar conductor';
+  q('driverSubmitButton').textContent = 'Guardar conductor';
+  form.elements.status.value = 'Habilitado';
+}
+
+function editDriver(id) {
+  const driver = driverById(id);
+  if (!driver) return;
+  const form = q('driverForm');
+  q('driverEditId').value = String(driver.id);
+  form.elements.name.value = driver.name || '';
+  form.elements.dni.value = driver.dni || '';
+  form.elements.license.value = driver.license || '';
+  form.elements.category.value = driver.category || '';
+  form.elements.expiry.value = driver.expiry || '';
+  form.elements.team.value = driver.team || '';
+  form.elements.zone.value = driver.zone || '';
+  form.elements.phone.value = driver.phone || '';
+  form.elements.status.value = driver.status || 'Habilitado';
+  q('driverModalKicker').textContent = 'Corrección de datos';
+  q('driverModalTitle').textContent = 'Editar conductor';
+  q('driverSubmitButton').textContent = 'Guardar cambios';
+  closeModal(q('detailModal'));
+  openModal('driverModal');
+}
+
+function updateIncidentResponsiblePreview() {
+  const preview = q('incidentResponsiblePreview');
+  const form = q('incidentForm');
+  if (!preview || !form) return;
+  const vehicleId = Number(form.elements.vehicle.value || 0);
+  const date = form.elements.date.value;
+  if (!vehicleId || !date) {
+    preview.innerHTML = '<span class="preview-label">Responsable en la fecha del incidente</span><strong>Selecciona una unidad y una fecha.</strong>';
+    preview.classList.remove('found');
+    return;
+  }
+  const assignment = findAssignmentAtDate(vehicleId, date);
+  if (!assignment) {
+    preview.innerHTML = `<span class="preview-label">Responsable en la fecha del incidente</span><strong>Sin asignación registrada el ${escapeHtml(formatDate(date))}</strong><small>El incidente podrá registrarse, pero quedará sin conductor responsable asociado.</small>`;
+    preview.classList.remove('found');
+    return;
+  }
+  const end = assignmentEndDate(assignment);
+  preview.innerHTML = `<span class="preview-label">Responsable en la fecha del incidente</span><strong>${escapeHtml(assignmentDriverName(assignment))}</strong><small>DNI ${escapeHtml(assignmentDriverDni(assignment))} · ${escapeHtml(assignment.teamSnapshot || assignment.team || 'Sin team')} · ${escapeHtml(assignment.zoneSnapshot || assignment.zone || 'Sin zonal')}<br>Asignación: ${escapeHtml(formatDate(assignment.date))} → ${escapeHtml(end ? formatDate(end) : 'actualmente activa')}</small>`;
+  preview.classList.add('found');
+}
+
 // Navegación y acciones estáticas
 qa('[data-view]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
 qa('[data-view-target]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.viewTarget)));
-qa('[data-open-modal]').forEach((button) => button.addEventListener('click', () => openModal(button.dataset.openModal)));
+qa('[data-open-modal]').forEach((button) => button.addEventListener('click', () => { if (button.dataset.openModal === 'driverModal') resetDriverFormForNew(); openModal(button.dataset.openModal); }));
 qa('[data-close-modal]').forEach((button) => button.addEventListener('click', () => closeModal(button.closest('.modal'))));
 q('menuToggle').addEventListener('click', () => q('sidebar').classList.toggle('open'));
 q('notificationButton').addEventListener('click', toggleNotificationPanel);
@@ -928,9 +1099,19 @@ q('globalSearch').addEventListener('keydown', (event) => {
 });
 q('assignmentDriverSelect').addEventListener('change', syncAssignmentDefaults);
 q('assignmentVehicleSelect').addEventListener('change', syncAssignmentDefaults);
+q('incidentVehicleSelect').addEventListener('change', updateIncidentResponsiblePreview);
+q('incidentDateInput').addEventListener('change', updateIncidentResponsiblePreview);
 
 // Delegación para botones generados dinámicamente
  document.addEventListener('click', (event) => {
+  const editDriverButton = event.target.closest('[data-edit-driver]');
+  if (editDriverButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    editDriver(editDriverButton.dataset.editDriver);
+    return;
+  }
+
   const fileButtonElement = event.target.closest('[data-open-file]');
   if (fileButtonElement) {
     event.preventDefault();
@@ -979,7 +1160,7 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-// Formularios operativos de demostración
+// Formularios operativos
 q('vehicleForm').addEventListener('submit', (event) => {
   event.preventDefault();
   const form = formObject(event.currentTarget);
@@ -992,9 +1173,34 @@ q('vehicleForm').addEventListener('submit', (event) => {
 q('driverForm').addEventListener('submit', (event) => {
   event.preventDefault();
   const form = formObject(event.currentTarget);
-  if (data.drivers.some((driver) => driver.dni === form.dni)) { toast('El DNI ya está registrado.'); return; }
-  data.drivers.push({ id: nextId(data.drivers), name: form.name.trim(), dni: form.dni, license: form.license.trim(), category: form.category.trim(), expiry: form.expiry, team: form.team.trim(), zone: form.zone.trim(), phone: form.phone.trim(), status: 'Habilitado' });
-  saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('driverModal')); toast('Conductor registrado correctamente.');
+  const editId = Number(form.editId || 0);
+  const duplicateDni = data.drivers.some((driver) => driver.dni === form.dni && driver.id !== editId);
+  const duplicateLicense = data.drivers.some((driver) => normalize(driver.license) === normalize(form.license) && driver.id !== editId);
+  if (duplicateDni) { toast('El DNI ya está registrado en otro conductor.'); return; }
+  if (duplicateLicense) { toast('La licencia ya está registrada en otro conductor.'); return; }
+
+  const values = {
+    name: form.name.trim(),
+    dni: form.dni,
+    license: form.license.trim(),
+    category: form.category.trim(),
+    expiry: form.expiry,
+    team: form.team.trim(),
+    zone: form.zone.trim(),
+    phone: form.phone.trim(),
+    status: form.status || 'Habilitado'
+  };
+
+  if (editId) {
+    const driver = driverById(editId);
+    if (!driver) { toast('No se encontró el conductor a editar.'); return; }
+    Object.assign(driver, values);
+    saveData(); renderAll(); resetDriverFormForNew(); closeModal(q('driverModal')); toast('Información del conductor actualizada.');
+    return;
+  }
+
+  data.drivers.push({ id: nextId(data.drivers), ...values });
+  saveData(); renderAll(); resetDriverFormForNew(); closeModal(q('driverModal')); toast('Conductor registrado correctamente.');
 });
 
 q('assignmentForm').addEventListener('submit', (event) => {
@@ -1006,7 +1212,8 @@ q('assignmentForm').addEventListener('submit', (event) => {
   const hasActive = data.assignments.some((assignment) => assignment.vehicleId === vehicleId && ['Activa', 'Pendiente'].includes(assignment.status));
   if (hasActive || vehicle.status !== 'Disponible') { toast('Esta unidad no está disponible para una nueva asignación.'); return; }
   if (Number(form.odometer) < Number(vehicle.odometer)) { toast('El odómetro de salida no puede ser menor al actual.'); return; }
-  data.assignments.push({ id: nextId(data.assignments), vehicleId, driverId: Number(form.driver), date: form.date, odometer: Number(form.odometer), team: form.team.trim(), zone: form.zone.trim(), location: form.location.trim(), expectedReturn: form.expectedReturn, status: 'Activa', notes: form.notes });
+  const assignedDriver = driverById(form.driver);
+  data.assignments.push({ id: nextId(data.assignments), vehicleId, driverId: Number(form.driver), driverNameSnapshot: assignedDriver?.name || '', driverDniSnapshot: assignedDriver?.dni || '', teamSnapshot: form.team.trim(), zoneSnapshot: form.zone.trim(), date: form.date, odometer: Number(form.odometer), team: form.team.trim(), zone: form.zone.trim(), location: form.location.trim(), expectedReturn: form.expectedReturn, status: 'Activa', notes: form.notes });
   setVehicleStatus(vehicleId, 'Asignada'); saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('assignmentModal')); toast('Asignación creada correctamente.');
 });
 
@@ -1033,8 +1240,28 @@ q('incidentForm').addEventListener('submit', async (event) => {
   const id = nextId(data.incidents);
   try {
     const fileStorageKey = file ? await saveLocalFile(file, `incident-${id}`) : null;
-    data.incidents.push({ id, vehicleId: Number(form.vehicle), type: form.type, date: form.date, severity: form.severity, description: form.description.trim(), status: 'Abierto', evidenceFile: file?.name || '', fileStorageKey });
-    saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('incidentModal')); toast('Incidente registrado.');
+    const vehicleId = Number(form.vehicle);
+    const assignment = findAssignmentAtDate(vehicleId, form.date);
+    data.incidents.push({
+      id,
+      vehicleId,
+      assignmentId: assignment?.id || null,
+      responsibleDriverId: assignment?.driverId || null,
+      responsibleName: assignment ? assignmentDriverName(assignment) : '',
+      responsibleDni: assignment ? assignmentDriverDni(assignment) : '',
+      responsibleTeam: assignment ? (assignment.teamSnapshot || assignment.team || '') : '',
+      responsibleZone: assignment ? (assignment.zoneSnapshot || assignment.zone || '') : '',
+      assignmentStart: assignment?.date || '',
+      assignmentEnd: assignment ? (assignmentEndDate(assignment) || '') : '',
+      type: form.type,
+      date: form.date,
+      severity: form.severity,
+      description: form.description.trim(),
+      status: 'Abierto',
+      evidenceFile: file?.name || '',
+      fileStorageKey
+    });
+    saveData(); renderAll(); event.currentTarget.reset(); updateIncidentResponsiblePreview(); closeModal(q('incidentModal')); toast(assignment ? `Incidente registrado. Responsable: ${assignmentDriverName(assignment)}.` : 'Incidente registrado sin asignación activa para esa fecha.');
   } catch (error) { toast(error.message || 'No se pudo guardar el incidente.'); }
 });
 

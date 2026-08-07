@@ -1012,3 +1012,72 @@ body { font-family: Arial, Helvetica, sans-serif; }
   .auth-shell { max-width: 560px; }
   .auth-panel { min-height: auto; padding: 36px 28px; }
 }
+
+
+/* ============================================================
+   Mejoras operativas v9
+   ============================================================ */
+.driver-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.incident-responsible-preview {
+  border: 1px solid #d8e1eb;
+  background: #f7f9fc;
+  border-radius: 9px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 4px;
+}
+.incident-responsible-preview.found {
+  border-color: #b9ddcb;
+  background: #f0faf5;
+}
+.incident-responsible-preview .preview-label {
+  color: #66768a;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.incident-responsible-preview strong {
+  color: #172235;
+  font-size: 12px;
+}
+.incident-responsible-preview small {
+  color: #647286;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.incident-responsible-line {
+  margin: 10px 0;
+  padding: 8px 9px;
+  border-radius: 7px;
+  background: #f1f6fb;
+  border: 1px solid #dce6f0;
+}
+.incident-responsible-line span {
+  display: block;
+  color: #647286;
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 3px;
+}
+.incident-responsible-line strong { font-size: 10px; color: #172235; }
+.incident-responsible-line.no-assignment { background: #fff8ed; border-color: #f0dcc0; }
+.expense-empty {
+  width: 100%;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  color: #647286;
+  gap: 5px;
+}
+.expense-empty strong { color: #172235; font-size: 12px; }
+.expense-empty span { font-size: 10px; }
