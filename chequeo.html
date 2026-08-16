@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0d2235" />
+  <title>FleetGuard | Chequeo vehicular pre-uso</title>
+  <link rel="stylesheet" href="chequeo.css" />
+</head>
+<body>
+  <main class="public-shell">
+    <section class="public-card">
+      <header class="public-header">
+        <div class="public-brand">
+          <span class="brand-mark">FG</span>
+          <div>
+            <strong>FleetGuard</strong>
+            <small>Control vehicular</small>
+          </div>
+        </div>
+        <div class="header-copy">
+          <p class="eyebrow">CONTROL PRE-OPERACIONAL</p>
+          <h1>Chequeo vehicular pre-uso</h1>
+          <p>Registra el estado de la unidad antes de iniciar el recorrido. La fecha y hora se guardan automáticamente.</p>
+        </div>
+      </header>
+
+      <div id="configWarning" class="notice error" hidden>
+        La conexión con FleetGuard no está configurada. Comunícate con el administrador.
+      </div>
+
+      <form id="publicPreUseForm" class="public-form" novalidate>
+        <section class="form-section">
+          <div class="section-title">
+            <span>1</span>
+            <div><strong>Identificación</strong><small>Ingresa tus datos y la placa que vas a utilizar.</small></div>
+          </div>
+
+          <div class="grid two">
+            <label>DNI
+              <input id="driverDni" name="driverDni" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" placeholder="12345678" required />
+            </label>
+            <label>Placa
+              <input id="plate" name="plate" maxlength="12" autocomplete="off" placeholder="ABC-123" required />
+            </label>
+          </div>
+
+          <button id="validateAssignmentButton" class="secondary-button full-button" type="button">Validar asignación</button>
+
+          <div id="assignmentResult" class="assignment-result" hidden></div>
+
+          <label id="manualNameField" hidden>Nombre completo
+            <input id="driverName" name="driverName" maxlength="120" placeholder="Nombres y apellidos" />
+            <small>Solo se solicita cuando la asignación todavía no está registrada en Supabase.</small>
+          </label>
+        </section>
+
+        <section class="form-section">
+          <div class="section-title">
+            <span>2</span>
+            <div><strong>Datos de salida</strong><small>La hora del registro no se puede modificar.</small></div>
+          </div>
+
+          <div class="grid two">
+            <label>Fecha
+              <input id="checkDate" type="text" readonly />
+            </label>
+            <label>Hora
+              <input id="checkTime" type="text" readonly />
+            </label>
+          </div>
+
+          <label>Odómetro actual
+            <div class="input-suffix"><input id="odometer" name="odometer" type="number" min="0" step="1" placeholder="58430" required /><span>km</span></div>
+          </label>
+
+          <label>Foto panorámica del vehículo
+            <input id="photo" name="photo" type="file" accept="image/*" capture="environment" required />
+            <small>Obligatoria. Procura que la unidad completa y la placa sean visibles.</small>
+          </label>
+          <div id="photoPreview" class="photo-preview" hidden></div>
+        </section>
+
+        <section class="form-section">
+          <div class="section-title">
+            <span>3</span>
+            <div><strong>Checklist visual</strong><small>Marca el estado observado antes de salir.</small></div>
+          </div>
+
+          <div class="check-grid">
+            <div class="check-item" data-check-item="tires">
+              <label>Llantas
+                <select name="check_tires"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="tires" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_tires_detail" rows="3" maxlength="500" placeholder="Describe qué problema presentan las llantas."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_tires_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="tires" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="lights">
+              <label>Luces
+                <select name="check_lights"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="lights" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_lights_detail" rows="3" maxlength="500" placeholder="Describe qué problema presentan las luces."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_lights_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="lights" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="mirrors">
+              <label>Espejos
+                <select name="check_mirrors"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="mirrors" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_mirrors_detail" rows="3" maxlength="500" placeholder="Describe qué problema presentan los espejos."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_mirrors_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="mirrors" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="windshield">
+              <label>Parabrisas
+                <select name="check_windshield"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="windshield" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_windshield_detail" rows="3" maxlength="500" placeholder="Describe qué problema presenta el parabrisas."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_windshield_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="windshield" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="plate">
+              <label>Placa visible
+                <select name="check_plate"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="plate" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_plate_detail" rows="3" maxlength="500" placeholder="Describe el problema con la placa."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_plate_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="plate" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="body">
+              <label>Carrocería
+                <select name="check_body"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="body" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_body_detail" rows="3" maxlength="500" placeholder="Describe el golpe, rayón u otro daño observado."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_body_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="body" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="fuel">
+              <label>Combustible
+                <select name="check_fuel"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="fuel" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_fuel_detail" rows="3" maxlength="500" placeholder="Describe la observación relacionada con el combustible."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_fuel_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="fuel" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="extinguisher">
+              <label>Extintor
+                <select name="check_extinguisher"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="extinguisher" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_extinguisher_detail" rows="3" maxlength="500" placeholder="Describe el problema encontrado en el extintor."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_extinguisher_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="extinguisher" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="firstaid">
+              <label>Botiquín
+                <select name="check_firstaid"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="firstaid" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_firstaid_detail" rows="3" maxlength="500" placeholder="Describe el faltante o problema encontrado en el botiquín."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_firstaid_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="firstaid" hidden></div>
+              </div>
+            </div>
+            <div class="check-item" data-check-item="documents">
+              <label>Documentos
+                <select name="check_documents"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select>
+              </label>
+              <div class="issue-fields" data-issue-fields="documents" hidden>
+                <label>Detalle de la observación *
+                  <textarea name="issue_documents_detail" rows="3" maxlength="500" placeholder="Describe el documento faltante o la observación encontrada."></textarea>
+                </label>
+                <label>Evidencia fotográfica *
+                  <input name="issue_documents_photo" type="file" accept="image/*" capture="environment" />
+                  <small>Obligatoria cuando este punto está marcado como No conforme.</small>
+                </label>
+                <div class="issue-photo-preview" data-issue-preview="documents" hidden></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="result-line">
+            <span>Resultado del chequeo</span>
+            <strong id="resultBadge" class="result-badge ok">Conforme</strong>
+          </div>
+
+          <label>Observaciones generales (opcional)
+            <textarea id="notes" name="notes" rows="4" placeholder="Agrega aquí cualquier comentario adicional del chequeo."></textarea>
+          </label>
+        </section>
+
+        <div id="formMessage" class="notice" hidden></div>
+        <button id="submitButton" class="primary-button submit-button" type="submit">Registrar chequeo</button>
+        <p class="privacy-note">El registro será enviado al panel administrativo de FleetGuard.</p>
+      </form>
+
+      <section id="successScreen" class="success-screen" hidden>
+        <div class="success-icon">✓</div>
+        <p class="eyebrow">REGISTRO COMPLETADO</p>
+        <h2>Chequeo guardado correctamente</h2>
+        <p>El administrador ya puede visualizar este registro en FleetGuard.</p>
+        <div id="successSummary" class="success-summary"></div>
+        <button id="newCheckButton" class="primary-button" type="button">Realizar otro chequeo</button>
+      </section>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
+  <script src="chequeo.js"></script>
+</body>
+</html>

@@ -15,8 +15,12 @@
       <div class="auth-panel">
         <div class="auth-form-wrap">
           <div class="auth-mobile-brand">
+            <div class="brand-mark">FG</div>
+            <strong>FleetGuard</strong>
           </div>
+          <p class="auth-eyebrow">ACCESO AUTORIZADO</p>
           <h2>Iniciar sesión</h2>
+          <p class="auth-description">Ingresa con el usuario creado en Supabase.</p>
 
           <div class="config-warning" id="configWarning" hidden>
             <strong>Falta configurar Supabase</strong>
@@ -38,6 +42,11 @@
             <p class="auth-message" id="authMessage" role="alert" aria-live="polite"></p>
             <button class="primary-button login-button" id="loginButton" type="submit">Ingresar a FleetGuard</button>
           </form>
+
+          <div class="auth-help">
+            <span>Los usuarios se crean desde Supabase Authentication.</span>
+            <span>No compartas tu contraseña.</span>
+          </div>
         </div>
       </div>
     </div>
@@ -57,6 +66,7 @@
         <button class="nav-item" data-view="vehicles"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/unidades.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>UN</span></span> Unidades</button>
         <button class="nav-item" data-view="drivers"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/conductor.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>CO</span></span> Conductores</button>
         <button class="nav-item" data-view="assignments"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/asignar.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>AS</span></span> Asignaciones</button>
+        <button class="nav-item" data-view="preuse"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/chequeo.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>CK</span></span> Chequeo pre-uso</button>
         <button class="nav-item" data-view="documents"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/documento.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>DO</span></span> Documentos</button>
         <button class="nav-item" data-view="incidents"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/incidente.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>IN</span></span> Incidentes</button>
         <button class="nav-item" data-view="maintenance"><span class="nav-icon-wrap"><img class="nav-icon-image" src="assets/icons/mantenimiento.png" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="nav-code" hidden>MA</span></span> Mantenimiento</button>
@@ -235,6 +245,30 @@
         </div>
       </section>
 
+      <section id="preuse" class="view">
+        <div class="section-toolbar">
+          <div>
+            <p class="section-description">Registros enviados desde la página independiente del personal. Desde aquí puedes revisar y corregir los chequeos guardados.</p>
+          </div>
+          <div class="toolbar-actions">
+            <input id="preUseSearch" class="control module-search" type="search" placeholder="Buscar placa, DNI o conductor" />
+            <button class="secondary-button" id="refreshPreUseButton" type="button">Actualizar</button>
+            <a class="secondary-button link-button" href="chequeo.html" target="_blank" rel="noopener">Abrir página del personal</a>
+          </div>
+        </div>
+
+        <div class="preuse-summary" id="preUseSummary"></div>
+
+        <div class="panel">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Fecha y hora</th><th>Unidad</th><th>Conductor</th><th>Odómetro</th><th>Resultado</th><th>Validación</th><th>Foto</th><th>Acciones</th></tr></thead>
+              <tbody id="preUseTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section id="documents" class="view">
         <div class="section-toolbar">
           <p class="section-description">SOAT, revisión técnica, contratos, facturas y evidencias.</p>
@@ -371,6 +405,114 @@
         <label>Fecha estimada de devolución<input name="expectedReturn" type="date" /></label>
         <label class="full">Observaciones<textarea name="notes"></textarea></label>
         <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Crear asignación</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="preUseEditModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card preuse-modal-card">
+      <div class="modal-header"><div><p class="panel-kicker">Administración de registros</p><h2>Editar chequeo pre-uso</h2></div><button class="secondary-button compact-button" type="button" data-close-modal>Cerrar</button></div>
+      <form id="preUseEditForm" class="form-grid">
+        <input type="hidden" name="id" id="preUseEditId" />
+        <label>Fecha y hora<input required id="preUseEditAt" name="checkAt" type="datetime-local" /></label>
+        <label>Placa<input required id="preUseEditPlate" name="plate" maxlength="12" /></label>
+        <label>Conductor<input required id="preUseEditDriver" name="driverName" maxlength="120" /></label>
+        <label>DNI<input required id="preUseEditDni" name="driverDni" inputmode="numeric" maxlength="8" /></label>
+        <label>Odómetro<input required id="preUseEditOdometer" name="odometer" type="number" min="0" /></label>
+        <label>Resultado<input id="preUseEditResult" name="result" type="text" readonly /></label>
+
+        <div class="preuse-checklist full">
+          <div class="preuse-checklist-heading">
+            <div><span>Checklist visual</span><strong>Corrige el estado si fuera necesario</strong></div>
+          </div>
+          <div class="preuse-check-grid">
+            <div class="preuse-check-item" data-edit-check-item="tires">
+              <label>Llantas<select name="check_tires"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="tires" hidden>
+                <label>Detalle<textarea name="issue_tires_detail" rows="2" maxlength="500" placeholder="Describe qué problema presentan las llantas."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_tires_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="tires" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="lights">
+              <label>Luces<select name="check_lights"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="lights" hidden>
+                <label>Detalle<textarea name="issue_lights_detail" rows="2" maxlength="500" placeholder="Describe qué problema presentan las luces."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_lights_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="lights" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="mirrors">
+              <label>Espejos<select name="check_mirrors"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="mirrors" hidden>
+                <label>Detalle<textarea name="issue_mirrors_detail" rows="2" maxlength="500" placeholder="Describe qué problema presentan los espejos."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_mirrors_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="mirrors" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="windshield">
+              <label>Parabrisas<select name="check_windshield"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="windshield" hidden>
+                <label>Detalle<textarea name="issue_windshield_detail" rows="2" maxlength="500" placeholder="Describe qué problema presenta el parabrisas."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_windshield_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="windshield" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="plate">
+              <label>Placa visible<select name="check_plate"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="plate" hidden>
+                <label>Detalle<textarea name="issue_plate_detail" rows="2" maxlength="500" placeholder="Describe el problema con la placa."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_plate_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="plate" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="body">
+              <label>Carrocería<select name="check_body"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="body" hidden>
+                <label>Detalle<textarea name="issue_body_detail" rows="2" maxlength="500" placeholder="Describe el golpe, rayón u otro daño observado."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_body_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="body" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="fuel">
+              <label>Combustible<select name="check_fuel"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="fuel" hidden>
+                <label>Detalle<textarea name="issue_fuel_detail" rows="2" maxlength="500" placeholder="Describe la observación relacionada con el combustible."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_fuel_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="fuel" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="extinguisher">
+              <label>Extintor<select name="check_extinguisher"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="extinguisher" hidden>
+                <label>Detalle<textarea name="issue_extinguisher_detail" rows="2" maxlength="500" placeholder="Describe el problema encontrado en el extintor."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_extinguisher_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="extinguisher" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="firstaid">
+              <label>Botiquín<select name="check_firstaid"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="firstaid" hidden>
+                <label>Detalle<textarea name="issue_firstaid_detail" rows="2" maxlength="500" placeholder="Describe el faltante o problema encontrado en el botiquín."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_firstaid_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="firstaid" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+            <div class="preuse-check-item" data-edit-check-item="documents">
+              <label>Documentos<select name="check_documents"><option>Conforme</option><option>No conforme</option><option>No aplica</option></select></label>
+              <div class="preuse-issue-editor" data-edit-issue-fields="documents" hidden>
+                <label>Detalle<textarea name="issue_documents_detail" rows="2" maxlength="500" placeholder="Describe el documento faltante o la observación encontrada."></textarea></label>
+                <label>Reemplazar evidencia (opcional)<input name="issue_documents_photo" type="file" accept="image/*" /></label>
+                <button class="row-action" type="button" data-existing-issue-photo="documents" hidden>Ver evidencia actual</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <label class="full">Observaciones generales (opcional)<textarea name="notes" id="preUseEditNotes"></textarea></label>
+        <label class="full">Reemplazar foto panorámica (opcional)<input name="photo" id="preUseEditPhoto" type="file" accept="image/*" /></label>
+        <div class="modal-actions full"><button type="button" class="secondary-button" data-close-modal>Cancelar</button><button type="submit" class="primary-button">Guardar cambios</button></div>
       </form>
     </div>
   </div>

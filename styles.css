@@ -1081,3 +1081,126 @@ body { font-family: Arial, Helvetica, sans-serif; }
 }
 .expense-empty strong { color: #172235; font-size: 12px; }
 .expense-empty span { font-size: 10px; }
+
+
+/* ============================================================
+   Módulo v10: Chequeo pre-uso vehicular
+   ============================================================ */
+.preuse-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.preuse-summary-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 4px;
+  box-shadow: var(--shadow-soft);
+}
+.preuse-summary-card span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.preuse-summary-card strong { color: var(--ink); font-size: 24px; line-height: 1; }
+.preuse-summary-card small { color: #77869a; font-size: 10px; }
+
+.preuse-modal-card { width: min(860px, 96vw); }
+.preuse-assignment-preview {
+  border: 1px solid #d8e1eb;
+  background: #f7f9fc;
+  border-radius: 10px;
+  padding: 13px 15px;
+  display: grid;
+  gap: 4px;
+}
+.preuse-assignment-preview.found { border-color: #b9ddcb; background: #f0faf5; }
+.preuse-assignment-preview .preview-label {
+  color: #66768a;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.preuse-assignment-preview strong { color: #172235; font-size: 13px; }
+.preuse-assignment-preview small { color: #647286; font-size: 10px; line-height: 1.5; }
+
+.preuse-photo-field small {
+  color: #77869a;
+  font-weight: 500;
+  line-height: 1.45;
+}
+.preuse-checklist {
+  border: 1px solid #d8e1eb;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fbfcfe;
+}
+.preuse-checklist-heading {
+  padding: 13px 15px;
+  border-bottom: 1px solid #e1e7ee;
+  background: #f4f7fb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.preuse-checklist-heading div { display: grid; gap: 2px; }
+.preuse-checklist-heading span {
+  color: #647286;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.preuse-checklist-heading strong { font-size: 12px; color: #172235; }
+.preuse-checklist-heading small { font-size: 10px; color: #77869a; text-align: right; }
+.preuse-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  padding: 14px;
+}
+.preuse-check-grid label {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(130px, .8fr);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  background: #fff;
+  border: 1px solid #e3e9ef;
+  border-radius: 9px;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+}
+.preuse-check-grid select {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+@media (max-width: 760px) {
+  .preuse-summary { grid-template-columns: 1fr; }
+  .preuse-check-grid { grid-template-columns: 1fr; }
+  .preuse-checklist-heading { align-items: flex-start; flex-direction: column; }
+  .preuse-checklist-heading small { text-align: left; }
+}
+
+
+/* FleetGuard V11 - página del personal */
+.link-button{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;white-space:nowrap}
+
+
+/* FleetGuard V12 - detalle/evidencia por cada no conformidad */
+.preuse-check-item{min-width:0;padding:9px 10px;background:#fff;border:1px solid #e3e9ef;border-radius:9px}.preuse-check-item>label{display:grid;grid-template-columns:minmax(100px,1fr) minmax(130px,.8fr);align-items:center;gap:10px;margin:0;padding:0;background:transparent;border:0;border-radius:0;color:#334155;font-size:11px;font-weight:700}.preuse-check-item.has-issue{border-color:#e1bd84;background:#fffaf2}.preuse-check-item.has-issue>label select{border-color:#c98725}.preuse-issue-editor{margin-top:10px;padding-top:10px;border-top:1px solid #ead9bd;display:grid;gap:9px}.preuse-issue-editor[hidden]{display:none}.preuse-issue-editor label{display:grid;grid-template-columns:1fr;align-items:stretch;gap:5px;margin:0;padding:0;background:transparent;border:0;border-radius:0;color:#6d5125;font-size:10px;font-weight:700}.preuse-issue-editor textarea{min-height:64px;resize:vertical}.preuse-issue-editor input[type="file"]{font-size:10px}.preuse-detail-field p{margin:6px 0 0;color:#59697b;font-size:11px;line-height:1.45}.preuse-detail-field .row-action{margin-top:8px}.preuse-detail-field.issue{border-color:#e1bd84;background:#fffaf2}@media(max-width:760px){.preuse-check-item>label{grid-template-columns:1fr}.preuse-issue-editor{grid-template-columns:1fr}}

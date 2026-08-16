@@ -9,6 +9,7 @@ const fleetguardConfig = window.FLEETGUARD_CONFIG || {};
 let supabaseClient = null;
 let currentProfile = null;
 let authTransition = Promise.resolve();
+let preUseRealtimeChannel = null;
 
 const roleLabels = {
   admin: 'Administrador',
@@ -57,8 +58,10 @@ function showApplication() {
   q('authScreen').hidden = true;
   q('appShell').hidden = false;
   q('connectionStatus').textContent = 'Sesión protegida';
-  q('dataModeLabel').textContent = 'Supabase Auth / datos locales';
+  q('dataModeLabel').textContent = 'Supabase Auth / chequeos en nube';
   renderAll();
+  loadPreUseChecksFromSupabase({ silent: true });
+  subscribePreUseRealtime();
 }
 
 function updateUserInterface(user, profile) {
@@ -139,10 +142,17 @@ const initialData = {
   documents: [],
   incidents: [],
   maintenance: [],
-  returns: []
+  returns: [],
+  preUseChecks: []
 };
 
 let data = loadData();
+
+// Compatibilidad con versiones anteriores guardadas en el navegador.
+if (!Array.isArray(data.preUseChecks)) {
+  data.preUseChecks = [];
+  saveData();
+}
 
 function cloneInitialData() {
   return JSON.parse(JSON.stringify(initialData));
@@ -343,6 +353,7 @@ const ICON_FILES = {
   vehicle: 'unidades.png',
   driver: 'conductor.png',
   assignment: 'asignar.png',
+  preuse: 'chequeo.png',
   document: 'documento.png',
   incident: 'incidente.png',
   maintenance: 'mantenimiento.png',
@@ -362,6 +373,7 @@ function typeIconName(type) {
     vehicle: 'vehicle',
     driver: 'driver',
     assignment: 'assignment',
+    preuse: 'preuse',
     document: 'document',
     incident: 'incident',
     maintenance: 'maintenance',
@@ -375,6 +387,7 @@ const titles = {
   vehicles: ['Inventario', 'Unidades vehiculares'],
   drivers: ['Personal autorizado', 'Conductores'],
   assignments: ['Trazabilidad', 'Asignaciones'],
+  preuse: ['Control operativo', 'Chequeo pre-uso'],
   documents: ['Cumplimiento', 'Documentos'],
   incidents: ['Operación', 'Incidentes'],
   maintenance: ['Taller y costos', 'Mantenimiento'],
@@ -400,7 +413,8 @@ function statusClass(status) {
     'Pendiente de devolución': 'pending', Devuelta: 'returned', Vigente: 'valid',
     'Por vencer': 'warning', Vencido: 'expired', Activa: 'active', Cerrada: 'closed',
     Pendiente: 'pending', Abierto: 'open', 'En proceso': 'in-progress', Cerrado: 'closed',
-    Programado: 'pending', Completado: 'completed', Cancelado: 'expired', Habilitado: 'valid', Confirmado: 'active', Reprogramado: 'warning', 'Correo enviado': 'assigned'
+    Programado: 'pending', Completado: 'completed', Cancelado: 'expired', Habilitado: 'valid', Confirmado: 'active', Reprogramado: 'warning', 'Correo enviado': 'assigned',
+    Conforme: 'valid', 'Con observaciones': 'warning'
   };
   return map[status] || 'pending';
 }
@@ -669,6 +683,288 @@ function renderReturns() {
     : '<div class="empty-state"><strong>Sin resultados</strong>No se encontraron devoluciones.</div>';
 }
 
+function localDateValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateTime(value) {
+  if (!value) return 'Sin fecha';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('es-PE', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }).format(date);
+}
+
+const PREUSE_CHECK_ITEMS = [
+  { key: 'tires', field: 'check_tires', label: 'Llantas' },
+  { key: 'lights', field: 'check_lights', label: 'Luces' },
+  { key: 'mirrors', field: 'check_mirrors', label: 'Espejos' },
+  { key: 'windshield', field: 'check_windshield', label: 'Parabrisas' },
+  { key: 'plate', field: 'check_plate', label: 'Placa visible' },
+  { key: 'body', field: 'check_body', label: 'Carrocería' },
+  { key: 'fuel', field: 'check_fuel', label: 'Combustible' },
+  { key: 'extinguisher', field: 'check_extinguisher', label: 'Extintor' },
+  { key: 'firstaid', field: 'check_firstaid', label: 'Botiquín' },
+  { key: 'documents', field: 'check_documents', label: 'Documentos' }
+];
+
+function normalizePreUseStatus(value) {
+  const status = String(value || 'Conforme').trim();
+  return status === 'Observado' ? 'No conforme' : status;
+}
+
+function isPreUseNonConforming(value) {
+  return ['No conforme', 'Observado'].includes(String(value || ''));
+}
+
+function preUseCheckEntry(checks, key) {
+  const raw = checks?.[key];
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return {
+      status: normalizePreUseStatus(raw.status || 'Conforme'),
+      detail: String(raw.detail || ''),
+      photoPath: String(raw.photo_path || raw.photoPath || ''),
+      photoName: String(raw.photo_name || raw.photoName || ''),
+      photoMimeType: String(raw.photo_mime_type || raw.photoMimeType || '')
+    };
+  }
+  return {
+    status: normalizePreUseStatus(raw || 'Conforme'),
+    detail: '', photoPath: '', photoName: '', photoMimeType: ''
+  };
+}
+
+function preUseResultFromForm(form) {
+  return PREUSE_CHECK_ITEMS.some((item) => isPreUseNonConforming(form.elements[item.field]?.value))
+    ? 'Con observaciones'
+    : 'Conforme';
+}
+
+function preUseGeneratedSummary(checks) {
+  return PREUSE_CHECK_ITEMS
+    .map((item) => {
+      const entry = preUseCheckEntry(checks || {}, item.key);
+      return isPreUseNonConforming(entry.status) && entry.detail ? `${item.label}: ${entry.detail}` : '';
+    })
+    .filter(Boolean)
+    .join(' | ');
+}
+
+function preUseIssueDetailField(label, entry) {
+  const status = normalizePreUseStatus(entry?.status || 'Conforme');
+  const issue = isPreUseNonConforming(status);
+  const detail = entry?.detail ? `<p>${escapeHtml(entry.detail)}</p>` : (issue ? '<p>Sin detalle registrado.</p>' : '');
+  const photo = entry?.photoPath
+    ? `<button class="row-action" type="button" data-preuse-photo="${escapeHtml(entry.photoPath)}" data-photo-name="${escapeHtml(entry.photoName || `Evidencia ${label}`)}" data-photo-title="Evidencia: ${escapeHtml(label)}">Ver evidencia</button>`
+    : (issue ? '<p>Sin evidencia fotográfica.</p>' : '');
+  return `<div class="detail-field preuse-detail-field ${issue ? 'issue' : ''}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(status)}</strong>${detail}${photo}</div>`;
+}
+
+function mapPreUseRow(row) {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    assignmentId: row.assignment_id,
+    driverId: row.driver_id,
+    plateSnapshot: row.plate_snapshot || '',
+    vehicleLabelSnapshot: row.vehicle_label_snapshot || '',
+    driverNameSnapshot: row.driver_name_snapshot || '',
+    driverDniSnapshot: row.driver_dni_snapshot || '',
+    teamSnapshot: row.team_snapshot || '',
+    zoneSnapshot: row.zone_snapshot || '',
+    assignmentStart: row.assignment_start || '',
+    assignmentVerified: Boolean(row.assignment_verified),
+    createdAt: row.check_at || row.created_at,
+    localDate: row.local_date || String(row.check_at || '').slice(0, 10),
+    odometer: Number(row.odometer || 0),
+    result: row.result || 'Conforme',
+    checks: row.checks || {},
+    notes: row.notes || '',
+    photoPath: row.photo_path || '',
+    photoFile: row.photo_name || '',
+    photoMimeType: row.photo_mime_type || '',
+    source: row.source || 'personal-web',
+    editedAt: row.edited_at || ''
+  };
+}
+
+function subscribePreUseRealtime() {
+  if (!supabaseClient || preUseRealtimeChannel) return;
+  preUseRealtimeChannel = supabaseClient
+    .channel('fleetguard-preuse-admin')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'preuse_checks' }, () => {
+      loadPreUseChecksFromSupabase({ silent: true });
+    })
+    .subscribe((status) => {
+      if (status === 'CHANNEL_ERROR') console.warn('Realtime de chequeos no disponible. Usa el botón Actualizar.');
+    });
+}
+
+async function loadPreUseChecksFromSupabase({ silent = false } = {}) {
+  if (!supabaseClient) return;
+  try {
+    const { data: rows, error } = await supabaseClient
+      .from('preuse_checks')
+      .select('*')
+      .order('check_at', { ascending: false });
+    if (error) throw error;
+    data.preUseChecks = (rows || []).map(mapPreUseRow);
+    saveData();
+    renderPreUseChecks();
+    if (!silent) toast('Chequeos actualizados desde Supabase.');
+  } catch (error) {
+    console.warn('No se pudieron cargar los chequeos pre-uso:', error);
+    if (!silent) toast('No se pudieron cargar los chequeos. Ejecuta primero 07_preuse_checks.sql.');
+  }
+}
+
+function renderPreUseChecks() {
+  const term = q('preUseSearch')?.value || '';
+  const checks = [...data.preUseChecks]
+    .filter((check) => includesTerm([
+      check.plateSnapshot, check.vehicleLabelSnapshot, check.driverNameSnapshot,
+      check.driverDniSnapshot, check.teamSnapshot, check.zoneSnapshot, check.result, check.notes, JSON.stringify(check.checks || {})
+    ], term))
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+  const today = localDateValue();
+  const todayChecks = data.preUseChecks.filter((item) => String(item.localDate || '').slice(0, 10) === today);
+  const observed = todayChecks.filter((item) => item.result === 'Con observaciones').length;
+  const conforming = todayChecks.filter((item) => item.result === 'Conforme').length;
+  q('preUseSummary').innerHTML = [
+    ['Chequeos de hoy', todayChecks.length, 'Registros'],
+    ['Conformes', conforming, 'Sin observaciones'],
+    ['Con observaciones', observed, 'Revisar']
+  ].map(([label, value, meta]) => `<article class="preuse-summary-card"><span>${escapeHtml(label)}</span><strong>${value}</strong><small>${escapeHtml(meta)}</small></article>`).join('');
+
+  q('preUseTable').innerHTML = checks.length
+    ? checks.map((check) => `<tr>
+      <td><strong>${escapeHtml(formatDateTime(check.createdAt))}</strong>${check.editedAt ? '<br><small>Editado por administración</small>' : ''}</td>
+      <td><strong>${escapeHtml(check.plateSnapshot || 'Sin placa')}</strong><br><small>${escapeHtml(check.vehicleLabelSnapshot || '')}</small></td>
+      <td>${escapeHtml(check.driverNameSnapshot || 'Sin conductor')}<br><small>DNI ${escapeHtml(check.driverDniSnapshot || 'Sin DNI')}</small></td>
+      <td>${Number(check.odometer || 0).toLocaleString('es-PE')} km</td>
+      <td><span class="status ${statusClass(check.result)}">${escapeHtml(check.result)}</span></td>
+      <td><span class="status ${check.assignmentVerified ? 'valid' : 'warning'}">${check.assignmentVerified ? 'Asignación validada' : 'Revisar'}</span></td>
+      <td>${check.photoPath ? `<button class="row-action" type="button" data-preuse-photo="${escapeHtml(check.photoPath)}" data-photo-name="${escapeHtml(check.photoFile || 'Foto pre-uso')}" data-photo-title="Foto panorámica pre-uso">Ver foto</button>` : '<span class="file-pill">Sin foto</span>'}</td>
+      <td><div class="row-actions"><button class="row-action" type="button" data-detail-type="preuse" data-detail-id="${escapeHtml(check.id)}">Ver detalle</button><button class="row-action" type="button" data-edit-preuse="${escapeHtml(check.id)}">Editar</button></div></td>
+    </tr>`).join('')
+    : '<tr><td colspan="8"><div class="empty-state"><strong>Sin chequeos registrados</strong>Los registros enviados por el personal aparecerán aquí.</div></td></tr>';
+}
+
+
+function toDatetimeLocal(value) {
+  const date = new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) return '';
+  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return shifted.toISOString().slice(0, 16);
+}
+
+function syncPreUseEditIssueField(item) {
+  const form = q('preUseEditForm');
+  const select = form?.elements[item.field];
+  if (!form || !select) return;
+  const panel = form.querySelector(`[data-edit-issue-fields="${item.key}"]`);
+  const wrapper = form.querySelector(`[data-edit-check-item="${item.key}"]`);
+  const detail = form.elements[`issue_${item.key}_detail`];
+  const photo = form.elements[`issue_${item.key}_photo`];
+  const active = isPreUseNonConforming(select.value);
+  if (panel) panel.hidden = !active;
+  wrapper?.classList.toggle('has-issue', active);
+  if (detail) detail.required = active;
+  if (photo) photo.required = active && !photo.dataset.existingPath;
+}
+
+function updatePreUseEditResult() {
+  const form = q('preUseEditForm');
+  if (!form) return;
+  PREUSE_CHECK_ITEMS.forEach(syncPreUseEditIssueField);
+  const result = preUseResultFromForm(form);
+  q('preUseEditResult').value = result;
+  q('preUseEditNotes').required = false;
+}
+
+function editPreUseCheck(id) {
+  const item = data.preUseChecks.find((check) => String(check.id) === String(id));
+  if (!item) { toast('No se encontró el chequeo.'); return; }
+  const form = q('preUseEditForm');
+  form.reset();
+  q('preUseEditId').value = item.id;
+  q('preUseEditAt').value = toDatetimeLocal(item.createdAt);
+  q('preUseEditPlate').value = item.plateSnapshot || '';
+  q('preUseEditDriver').value = item.driverNameSnapshot || '';
+  q('preUseEditDni').value = item.driverDniSnapshot || '';
+  q('preUseEditOdometer').value = Number(item.odometer || 0);
+  q('preUseEditNotes').value = item.notes && item.notes !== preUseGeneratedSummary(item.checks || {}) ? item.notes : '';
+
+  PREUSE_CHECK_ITEMS.forEach((checkItem) => {
+    const entry = preUseCheckEntry(item.checks || {}, checkItem.key);
+    const select = form.elements[checkItem.field];
+    const detail = form.elements[`issue_${checkItem.key}_detail`];
+    const photo = form.elements[`issue_${checkItem.key}_photo`];
+    const existingButton = form.querySelector(`[data-existing-issue-photo="${checkItem.key}"]`);
+    if (select) select.value = entry.status;
+    if (detail) detail.value = entry.detail || '';
+    if (photo) {
+      photo.value = '';
+      photo.dataset.existingPath = entry.photoPath || '';
+      photo.dataset.existingName = entry.photoName || '';
+      photo.dataset.existingMime = entry.photoMimeType || '';
+    }
+    if (existingButton) {
+      existingButton.hidden = !entry.photoPath;
+      existingButton.dataset.preusePhoto = entry.photoPath || '';
+      existingButton.dataset.photoName = entry.photoName || `Evidencia ${checkItem.label}`;
+      existingButton.dataset.photoTitle = `Evidencia: ${checkItem.label}`;
+    }
+  });
+
+  updatePreUseEditResult();
+  closeModal(q('detailModal'));
+  openModal('preUseEditModal');
+}
+
+async function openPreUseRemotePhoto(path, name = 'Foto pre-uso', title = 'Foto panorámica pre-uso') {
+  if (!supabaseClient || !path) return;
+  try {
+    const { data: signed, error } = await supabaseClient.storage
+      .from('preuse-evidence')
+      .createSignedUrl(path, 600);
+    if (error) throw error;
+    const url = signed?.signedUrl;
+    if (!url) throw new Error('No se pudo generar el enlace de la fotografía.');
+    q('fileViewerTitle').textContent = title || 'Evidencia pre-uso';
+    q('fileViewerName').textContent = name || 'Foto pre-uso';
+    q('fileDownloadButton').href = url;
+    q('fileDownloadButton').download = name || 'foto-preuso';
+    q('fileViewerContent').innerHTML = `<img src="${escapeHtml(url)}" alt="${escapeHtml(title || 'Evidencia del chequeo pre-uso')}">`;
+    openModal('fileViewerModal');
+  } catch (error) {
+    console.error(error);
+    toast('No se pudo abrir la fotografía desde Supabase.');
+  }
+}
+
+async function uploadAdminPreUsePhoto(file, plate, dni, category = 'panoramica') {
+  if (!file) return '';
+  if (file.size > 15 * 1024 * 1024) throw new Error('La fotografía supera el límite de 15 MB.');
+  const ext = (file.name.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+  const uuid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const safeCategory = String(category || 'evidencia').replace(/[^a-z0-9-]/gi, '').toLowerCase();
+  const safePlate = String(plate || 'UNIDAD').replace(/[^A-Z0-9-]/gi, '').toUpperCase();
+  const safeDni = String(dni || 'DNI').replace(/\D/g, '');
+  const path = `admin/${localDateValue()}/${safePlate}-${safeDni}/${safeCategory}-${uuid}.${ext}`;
+  const { error } = await supabaseClient.storage.from('preuse-evidence').upload(path, file, {
+    cacheControl: '3600', upsert: false, contentType: file.type || 'image/jpeg'
+  });
+  if (error) throw error;
+  return path;
+}
+
 function populateSelects() {
   const availableVehicles = data.vehicles.filter((vehicle) => vehicle.status === 'Disponible');
   const vehicleOptions = data.vehicles.map((vehicle) => `<option value="${vehicle.id}">${escapeHtml(vehicle.plate)} / ${escapeHtml(vehicle.brand)} ${escapeHtml(vehicle.model)}</option>`).join('');
@@ -685,6 +981,7 @@ function populateSelects() {
       return `<option value="${assignment.id}">${escapeHtml(vehicle?.plate || 'Sin placa')} / ${escapeHtml(assignmentDriverName(assignment))}</option>`;
     }).join('')
     : '<option value="">No hay asignaciones activas</option>';
+
   syncAssignmentDefaults();
 }
 
@@ -698,6 +995,7 @@ function renderAll() {
   renderVehicles();
   renderDrivers();
   renderAssignments();
+  renderPreUseChecks();
   renderDocuments();
   renderIncidents();
   renderMaintenance();
@@ -764,6 +1062,26 @@ function openDetail(type, id) {
     const vehicle = vehicleById(item.vehicleId); const driver = driverById(item.driverId);
     title = `Asignación ${vehicle?.plate || ''}`; eyebrow = 'Historial de asignación';
     content = [detailField('Conductor', assignmentDriverName(item)), detailField('DNI', assignmentDriverDni(item)), detailField('Team', item.teamSnapshot || item.team), detailField('Zonal', item.zoneSnapshot || item.zone), detailField('Fecha de entrega', formatDate(item.date)), detailField('Lugar de entrega', item.location), detailField('Odómetro de salida', `${Number(item.odometer).toLocaleString('es-PE')} km`), detailField('Devolución estimada', formatDate(item.expectedReturn)), detailField('Estado', item.status), detailField('Observaciones', item.notes || 'Sin observaciones')].join('');
+  } else if (type === 'preuse') {
+    const item = data.preUseChecks.find((check) => String(check.id) === String(id)); if (!item) return;
+    title = `Chequeo ${item.plateSnapshot || ''}`; eyebrow = 'Chequeo pre-uso vehicular';
+    const checklistFields = PREUSE_CHECK_ITEMS.map((checkItem) =>
+      preUseIssueDetailField(checkItem.label, preUseCheckEntry(item.checks || {}, checkItem.key))
+    );
+    content = [
+      detailField('Fecha y hora', formatDateTime(item.createdAt)),
+      detailField('Unidad', item.plateSnapshot || 'Sin placa'),
+      detailField('Marca y modelo', item.vehicleLabelSnapshot || 'Sin información'),
+      detailField('Conductor', item.driverNameSnapshot || 'Sin conductor'),
+      detailField('DNI', item.driverDniSnapshot || 'Sin DNI'),
+      detailField('Team / Zonal', `${item.teamSnapshot || 'Sin team'} / ${item.zoneSnapshot || 'Sin zonal'}`),
+      detailField('Validación', item.assignmentVerified ? 'Asignación validada en Supabase' : 'Registro pendiente de validación'),
+      detailField('Odómetro', `${Number(item.odometer || 0).toLocaleString('es-PE')} km`),
+      detailField('Resultado', item.result || 'Conforme'),
+      ...checklistFields,
+      detailField('Observaciones generales', item.notes && item.notes !== preUseGeneratedSummary(item.checks || {}) ? item.notes : 'Sin observaciones adicionales')
+    ].join('');
+    actions = `<div class="modal-actions">${item.photoPath ? `<button class="secondary-button" type="button" data-preuse-photo="${escapeHtml(item.photoPath)}" data-photo-name="${escapeHtml(item.photoFile || 'Foto pre-uso')}" data-photo-title="Foto panorámica pre-uso">Visualizar foto panorámica</button>` : ''}<button class="primary-button" type="button" data-edit-preuse="${escapeHtml(item.id)}">Editar registro</button></div>`;
   } else if (type === 'document') {
     const item = data.documents.find((documentItem) => documentItem.id === Number(id)); if (!item) return;
     const vehicle = vehicleById(item.vehicleId);
@@ -812,6 +1130,7 @@ function buildSearchIndex() {
   data.vehicles.forEach((item) => items.push({ view: 'vehicles', type: 'vehicle', id: item.id, code: 'UN', icon: 'vehicle', label: item.plate, meta: `${item.brand} ${item.model} / ${item.status}`, terms: [item.plate, item.brand, item.model, item.type, item.city, item.status] }));
   data.drivers.forEach((item) => items.push({ view: 'drivers', type: 'driver', id: item.id, code: 'CO', icon: 'driver', label: item.name, meta: `DNI ${item.dni} / ${item.team}`, terms: [item.name, item.dni, item.license, item.team, item.zone] }));
   data.assignments.forEach((item) => { const vehicle = vehicleById(item.vehicleId); const driver = driverById(item.driverId); items.push({ view: 'assignments', type: 'assignment', id: item.id, code: 'AS', icon: 'assignment', label: `${vehicle?.plate || 'Unidad'} / ${assignmentDriverName(item)}`, meta: `${item.teamSnapshot || item.team} / ${item.status}`, terms: [vehicle?.plate, assignmentDriverName(item), assignmentDriverDni(item), item.teamSnapshot || item.team, item.zoneSnapshot || item.zone, item.status] }); });
+  data.preUseChecks.forEach((item) => items.push({ view: 'preuse', type: 'preuse', id: item.id, code: 'CK', icon: 'preuse', label: `${item.plateSnapshot || 'Unidad'} / ${item.driverNameSnapshot || 'Conductor'}`, meta: `${item.result || 'Conforme'} / ${formatDateTime(item.createdAt)}`, terms: [item.plateSnapshot, item.driverNameSnapshot, item.driverDniSnapshot, item.teamSnapshot, item.zoneSnapshot, item.result, item.notes] }));
   data.documents.forEach((item) => { const vehicle = vehicleById(item.vehicleId); items.push({ view: 'documents', type: 'document', id: item.id, code: 'DO', icon: 'document', label: `${item.type} / ${vehicle?.plate || 'Unidad'}`, meta: `${item.status} / ${formatDate(item.expiry)}`, terms: [vehicle?.plate, item.type, item.file, item.status] }); });
   data.incidents.forEach((item) => { const vehicle = vehicleById(item.vehicleId); items.push({ view: 'incidents', type: 'incident', id: item.id, code: 'IN', icon: 'incident', label: `${item.type} / ${vehicle?.plate || 'Unidad'}`, meta: `${item.severity} / ${item.status}`, terms: [vehicle?.plate, item.type, item.description, item.severity, item.status] }); });
   data.maintenance.forEach((item) => { const vehicle = vehicleById(item.vehicleId); items.push({ view: 'maintenance', type: 'maintenance', id: item.id, code: 'MA', icon: 'maintenance', label: `${item.type} / ${vehicle?.plate || 'Unidad'}`, meta: `${item.workshop} / ${item.status}`, terms: [vehicle?.plate, item.type, item.workshop, item.description, item.status] }); });
@@ -1085,6 +1404,7 @@ q('vehicleSearch').addEventListener('input', renderVehicles);
 q('driverSearch').addEventListener('input', renderDrivers);
 q('assignmentSearch').addEventListener('input', renderAssignments);
 q('assignmentStatusFilter').addEventListener('change', renderAssignments);
+q('preUseSearch').addEventListener('input', renderPreUseChecks);
 q('documentSearch').addEventListener('input', renderDocuments);
 q('incidentSearch').addEventListener('input', renderIncidents);
 q('maintenanceSearch').addEventListener('input', renderMaintenance);
@@ -1101,9 +1421,33 @@ q('assignmentDriverSelect').addEventListener('change', syncAssignmentDefaults);
 q('assignmentVehicleSelect').addEventListener('change', syncAssignmentDefaults);
 q('incidentVehicleSelect').addEventListener('change', updateIncidentResponsiblePreview);
 q('incidentDateInput').addEventListener('change', updateIncidentResponsiblePreview);
+q('refreshPreUseButton').addEventListener('click', () => loadPreUseChecksFromSupabase());
+q('preUseEditForm').addEventListener('change', (event) => {
+  if (event.target.matches('.preuse-check-grid select')) {
+    const item = PREUSE_CHECK_ITEMS.find((candidate) => candidate.field === event.target.name);
+    if (item) syncPreUseEditIssueField(item);
+    updatePreUseEditResult();
+  }
+});
 
 // Delegación para botones generados dinámicamente
  document.addEventListener('click', (event) => {
+  const editPreUseButton = event.target.closest('[data-edit-preuse]');
+  if (editPreUseButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    editPreUseCheck(editPreUseButton.dataset.editPreuse);
+    return;
+  }
+
+  const preUsePhotoButton = event.target.closest('[data-preuse-photo]');
+  if (preUsePhotoButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    openPreUseRemotePhoto(preUsePhotoButton.dataset.preusePhoto, preUsePhotoButton.dataset.photoName || 'Foto pre-uso', preUsePhotoButton.dataset.photoTitle || 'Evidencia pre-uso');
+    return;
+  }
+
   const editDriverButton = event.target.closest('[data-edit-driver]');
   if (editDriverButton) {
     event.preventDefault();
@@ -1215,6 +1559,134 @@ q('assignmentForm').addEventListener('submit', (event) => {
   const assignedDriver = driverById(form.driver);
   data.assignments.push({ id: nextId(data.assignments), vehicleId, driverId: Number(form.driver), driverNameSnapshot: assignedDriver?.name || '', driverDniSnapshot: assignedDriver?.dni || '', teamSnapshot: form.team.trim(), zoneSnapshot: form.zone.trim(), date: form.date, odometer: Number(form.odometer), team: form.team.trim(), zone: form.zone.trim(), location: form.location.trim(), expectedReturn: form.expectedReturn, status: 'Activa', notes: form.notes });
   setVehicleStatus(vehicleId, 'Asignada'); saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('assignmentModal')); toast('Asignación creada correctamente.');
+});
+
+q('preUseEditForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
+  const formElement = event.currentTarget;
+  const form = formObject(formElement);
+  const id = String(form.id || '').trim();
+  const existing = data.preUseChecks.find((check) => String(check.id) === id);
+  if (!existing) { toast('No se encontró el registro a editar.'); return; }
+
+  const dni = String(form.driverDni || '').replace(/\D/g, '').slice(0, 8);
+  const plate = String(form.plate || '').trim().toUpperCase();
+  const driverName = String(form.driverName || '').trim();
+  const odometer = Number(form.odometer || 0);
+  const result = preUseResultFromForm(formElement);
+  const notes = String(form.notes || '').trim();
+  if (dni.length !== 8) { toast('El DNI debe tener 8 dígitos.'); return; }
+  if (!plate || !driverName) { toast('Completa placa y conductor.'); return; }
+
+  for (const checkItem of PREUSE_CHECK_ITEMS) {
+    const status = normalizePreUseStatus(formElement.elements[checkItem.field]?.value || 'Conforme');
+    if (!isPreUseNonConforming(status)) continue;
+    const detail = String(formElement.elements[`issue_${checkItem.key}_detail`]?.value || '').trim();
+    const photoInput = formElement.elements[`issue_${checkItem.key}_photo`];
+    if (!detail) { toast(`Completa el detalle de ${checkItem.label}.`); formElement.elements[`issue_${checkItem.key}_detail`]?.focus(); return; }
+    if (!photoInput?.files?.[0] && !photoInput?.dataset?.existingPath) { toast(`Adjunta una evidencia fotográfica para ${checkItem.label}.`); return; }
+  }
+
+  const updatePayload = {
+    plate_snapshot: plate,
+    driver_name_snapshot: driverName,
+    driver_dni_snapshot: dni,
+    check_at: new Date(form.checkAt).toISOString(),
+    local_date: String(form.checkAt || '').slice(0, 10),
+    odometer,
+    result,
+    notes: notes || null,
+    edited_at: new Date().toISOString()
+  };
+
+  let newPhotoPath = '';
+  const uploadedIssuePaths = [];
+  const removeAfterSuccess = [];
+  const newPhoto = formElement.elements.photo.files[0];
+  try {
+    const checks = {};
+    for (const checkItem of PREUSE_CHECK_ITEMS) {
+      const status = normalizePreUseStatus(formElement.elements[checkItem.field]?.value || 'Conforme');
+      const oldEntry = preUseCheckEntry(existing.checks || {}, checkItem.key);
+      const issuePhotoInput = formElement.elements[`issue_${checkItem.key}_photo`];
+      if (isPreUseNonConforming(status)) {
+        const detail = String(formElement.elements[`issue_${checkItem.key}_detail`]?.value || '').trim();
+        let photoPath = issuePhotoInput?.dataset?.existingPath || oldEntry.photoPath || '';
+        let photoName = issuePhotoInput?.dataset?.existingName || oldEntry.photoName || '';
+        let photoMimeType = issuePhotoInput?.dataset?.existingMime || oldEntry.photoMimeType || '';
+        const replacement = issuePhotoInput?.files?.[0];
+        if (replacement) {
+          const uploaded = await uploadAdminPreUsePhoto(replacement, plate, dni, checkItem.key);
+          uploadedIssuePaths.push(uploaded);
+          if (photoPath) removeAfterSuccess.push(photoPath);
+          photoPath = uploaded;
+          photoName = replacement.name;
+          photoMimeType = replacement.type || 'image/jpeg';
+        }
+        checks[checkItem.key] = {
+          status: 'No conforme', detail,
+          photo_path: photoPath, photo_name: photoName, photo_mime_type: photoMimeType
+        };
+      } else {
+        if (oldEntry.photoPath) removeAfterSuccess.push(oldEntry.photoPath);
+        checks[checkItem.key] = { status };
+      }
+    }
+    updatePayload.checks = checks;
+
+    const { data: resolved, error: resolveError } = await supabaseClient.rpc('resolve_preuse_assignment', { p_dni: dni, p_plate: plate });
+    if (resolveError) throw resolveError;
+    const match = Array.isArray(resolved) ? resolved[0] : resolved;
+    if (match) {
+      Object.assign(updatePayload, {
+        vehicle_id: match.vehicle_id,
+        assignment_id: match.assignment_id,
+        driver_id: match.driver_id,
+        plate_snapshot: match.plate || plate,
+        vehicle_label_snapshot: match.vehicle_label || existing.vehicleLabelSnapshot || null,
+        driver_name_snapshot: match.driver_name || driverName,
+        driver_dni_snapshot: match.driver_dni || dni,
+        team_snapshot: match.team || null,
+        zone_snapshot: match.zone || null,
+        assignment_start: match.assignment_start || null,
+        assignment_verified: true
+      });
+    } else {
+      Object.assign(updatePayload, {
+        vehicle_id: null, assignment_id: null, driver_id: null,
+        assignment_verified: false,
+        team_snapshot: null, zone_snapshot: null, assignment_start: null
+      });
+    }
+
+    if (newPhoto) {
+      newPhotoPath = await uploadAdminPreUsePhoto(newPhoto, plate, dni, 'panoramica');
+      Object.assign(updatePayload, {
+        photo_path: newPhotoPath,
+        photo_name: newPhoto.name,
+        photo_mime_type: newPhoto.type || 'image/jpeg'
+      });
+    }
+
+    const { error } = await supabaseClient.from('preuse_checks').update(updatePayload).eq('id', id);
+    if (error) throw error;
+
+    if (newPhotoPath && existing.photoPath) removeAfterSuccess.push(existing.photoPath);
+    const uniqueOldPaths = [...new Set(removeAfterSuccess.filter(Boolean).filter((path) => path !== newPhotoPath && !uploadedIssuePaths.includes(path)))];
+    if (uniqueOldPaths.length) supabaseClient.storage.from('preuse-evidence').remove(uniqueOldPaths).catch(() => {});
+
+    closeModal(q('preUseEditModal'));
+    await loadPreUseChecksFromSupabase({ silent: true });
+    toast('Chequeo actualizado correctamente.');
+  } catch (error) {
+    console.error(error);
+    const cleanup = [newPhotoPath, ...uploadedIssuePaths].filter(Boolean);
+    if (cleanup.length) {
+      try { await supabaseClient.storage.from('preuse-evidence').remove(cleanup); } catch {}
+    }
+    toast(error.message || 'No se pudo actualizar el chequeo.');
+  }
 });
 
 q('documentForm').addEventListener('submit', async (event) => {

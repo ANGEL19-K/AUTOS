@@ -68,3 +68,28 @@ Reemplazar gradualmente `localStorage` por las tablas reales de Supabase, comenz
 - Conductores editables sin alterar los datos históricos ya copiados en las asignaciones.
 - Incidentes identifican y guardan el conductor responsable según la fecha del incidente.
 - Gastos mensuales calculados con costos de mantenimiento registrados y alquiler mensual configurado en unidades alquiladas.
+
+
+## V10 - Chequeo pre-uso vehicular
+
+Se agregó el módulo **Chequeo pre-uso** para registrar la inspección antes de sacar una unidad. Incluye placa/unidad, conductor de la asignación vigente, fecha y hora automáticas, odómetro, foto panorámica obligatoria, checklist visual, observaciones y resultado automático (Conforme / Con observaciones).
+
+Los registros operativos y sus fotos continúan guardándose localmente en el navegador (localStorage + IndexedDB) mientras se completa la conexión de los módulos con Supabase.
+
+Si deseas un icono propio en el menú, agrega `assets/icons/chequeo.png`. Si no existe, FleetGuard mostrará el código `CK`.
+
+## FleetGuard V11 - Chequeo pre-uso separado
+
+Esta versión incorpora una página independiente para el personal:
+
+- `chequeo.html`: formulario que puede abrirse desde un celular o PC sin entrar al panel administrativo.
+- `index.html` → **Chequeo pre-uso**: historial administrativo de los registros recibidos.
+- `07_preuse_checks.sql`: crea la tabla, funciones RPC, políticas RLS y el bucket privado `preuse-evidence`.
+
+### Activación
+
+1. Ejecuta `07_preuse_checks.sql` en **Supabase → SQL Editor**.
+2. Sube `index.html`, `app.js`, `styles.css`, `chequeo.html`, `chequeo.js`, `chequeo.css` y `supabase-config.js` al mismo sitio de Render/GitHub.
+3. La página para el personal quedará disponible en `/chequeo.html`.
+
+Los registros enviados por el personal se almacenan en Supabase y el administrador puede revisarlos y editarlos desde FleetGuard.
