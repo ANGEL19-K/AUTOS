@@ -12,7 +12,7 @@ Versión corporativa del sistema de gestión vehicular.
 - Panel funcional de alertas.
 - Fichas de detalle para los registros.
 - Botones de navegación, apertura, cierre, exportación y eliminación funcionales.
-- Datos operativos temporales almacenados en `localStorage`.
+- Datos operativos conectados a PostgreSQL/Supabase; `localStorage` queda solo como respaldo de migración/caché.
 
 ## Ejecutar
 
@@ -22,9 +22,9 @@ Abre la carpeta en Visual Studio Code y ejecuta `index.html` con Live Server.
 
 `supabase-config.js` contiene únicamente la Project URL y la Publishable Key. No agregues `service_role`, Secret Key ni la contraseña de PostgreSQL.
 
-## Próxima etapa
+## Arquitectura actual
 
-Reemplazar gradualmente `localStorage` por las tablas reales de Supabase, comenzando por `vehicles`.
+Supabase es la fuente principal de datos y autenticación. Los archivos operativos se guardan en Supabase Storage. Cloudflare R2 puede incorporarse posteriormente si se decide mover archivos pesados.
 
 
 ## Ajustes v3
@@ -74,7 +74,7 @@ Reemplazar gradualmente `localStorage` por las tablas reales de Supabase, comenz
 
 Se agregó el módulo **Chequeo pre-uso** para registrar la inspección antes de sacar una unidad. Incluye placa/unidad, conductor de la asignación vigente, fecha y hora automáticas, odómetro, foto panorámica obligatoria, checklist visual, observaciones y resultado automático (Conforme / Con observaciones).
 
-Los registros operativos y sus fotos continúan guardándose localmente en el navegador (localStorage + IndexedDB) mientras se completa la conexión de los módulos con Supabase.
+Nota histórica de V10: en esa versión los chequeos todavía eran locales. Desde V11 los chequeos se guardan en Supabase y desde V14 los módulos operativos también.
 
 Si deseas un icono propio en el menú, agrega `assets/icons/chequeo.png`. Si no existe, FleetGuard mostrará el código `CK`.
 
@@ -105,3 +105,35 @@ La página `chequeo.html` ahora solicita únicamente el DNI del trabajador. Al p
 Si existe más de una unidad activa para el mismo DNI, se muestra un selector limitado a esas unidades. Si no existe una asignación activa, el formulario no permite registrar el chequeo.
 
 Para actualizar una instalación V11/V12 ya existente, ejecuta `08_preuse_dni_lookup.sql` en **Supabase → SQL Editor** antes de publicar `chequeo.html` y `chequeo.js`.
+
+## FleetGuard V14 - Operación completa en Supabase
+
+Desde V14, Supabase es la fuente principal de los módulos operativos del dashboard:
+
+- Unidades (`vehicles`)
+- Conductores (`drivers`)
+- Asignaciones (`vehicle_assignments`)
+- Documentos (`vehicle_documents`)
+- Incidentes (`incidents`)
+- Mantenimientos (`maintenance_records`)
+- Devoluciones (`vehicle_returns`)
+- Gastos (`expenses`, lectura para cálculos/reportes)
+- Evidencias (`attachments` + Supabase Storage)
+- Chequeo pre-uso (`preuse_checks`)
+
+Los archivos nuevos dejan de depender de IndexedDB: documentos, evidencias de incidentes, comprobantes de mantenimiento y fotos de devolución se suben a los buckets privados de Supabase Storage y se visualizan mediante URLs temporales firmadas.
+
+### Migración de los registros anteriores
+
+Al iniciar V14 por primera vez como administrador, FleetGuard detecta los datos que las versiones anteriores guardaban en `fleetguard-data-v3` y realiza una migración única a Supabase. La copia local anterior no se borra; queda como respaldo. Después de la migración, los módulos leen de Supabase.
+
+### Activación de V14
+
+1. Asegúrate de haber ejecutado previamente los scripts `01` a `08` usados durante la configuración de FleetGuard.
+2. Ejecuta `09_fleetguard_cloud_v14.sql` en **Supabase → SQL Editor**.
+3. Publica los archivos de V14 en GitHub/Render.
+4. Inicia sesión una vez desde el navegador donde estaban tus registros locales para que se ejecute la migración automática.
+5. Comprueba en **Supabase → Table Editor** que aparecen la unidad, conductor y asignación.
+6. Después prueba `/chequeo.html`: con solo el DNI debe recuperar automáticamente la unidad asignada.
+
+`09_fleetguard_cloud_v14.sql` también corrige la búsqueda del chequeo para que una fecha **estimada** de devolución ya vencida no invalide una asignación que continúa con estado `Activa` o `Pendiente de devolución`.

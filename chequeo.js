@@ -90,8 +90,8 @@ function assignmentInfoHtml(row){
   const team=escapeHtml(row.team||'Sin team');
   const zone=escapeHtml(row.zone||'Sin zonal');
   const start=escapeHtml(row.assignment_start||'fecha registrada');
-  const end=row.expected_return_date?` hasta ${escapeHtml(row.expected_return_date)}`:'';
-  return `<strong>${escapeHtml(row.driver_name||'Conductor')} · ${escapeHtml(row.plate||'')}</strong><span>${vehicle} · ${team} · ${zone}<br>Asignación vigente desde ${start}${end}.</span>`;
+  const expected=row.expected_return_date?`<br>Devolución estimada: ${escapeHtml(row.expected_return_date)}`:'';
+  return `<strong>${escapeHtml(row.driver_name||'Conductor')} · ${escapeHtml(row.plate||'')}</strong><span>${vehicle} · ${team} · ${zone}<br>Asignación activa desde ${start}.${expected}</span>`;
 }
 
 function applyAssignment(row){

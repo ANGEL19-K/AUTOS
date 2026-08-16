@@ -1,15 +1,19 @@
 const STORAGE_KEY = 'fleetguard-data-v3';
+const CLOUD_CACHE_KEY = 'fleetguard-cloud-cache-v1';
+const MIGRATION_FLAG = 'fleetguard-migrated-to-supabase-v14';
 
 // ============================================================
 // SUPABASE AUTH
-// Supabase gestiona el acceso y los perfiles. Los módulos
-// operativos continúan en localStorage hasta la siguiente etapa.
+// Supabase gestiona el acceso, perfiles y todos los módulos operativos.
+// localStorage se conserva únicamente para migrar datos de versiones anteriores.
 // ============================================================
 const fleetguardConfig = window.FLEETGUARD_CONFIG || {};
 let supabaseClient = null;
 let currentProfile = null;
 let authTransition = Promise.resolve();
 let preUseRealtimeChannel = null;
+let operationalRealtimeChannel = null;
+let operationalReloadTimer = null;
 
 const roleLabels = {
   admin: 'Administrador',
@@ -54,14 +58,28 @@ function showLoginScreen(message = '') {
   if (message) setAuthMessage(message);
 }
 
-function showApplication() {
+async function showApplication() {
   q('authScreen').hidden = true;
   q('appShell').hidden = false;
-  q('connectionStatus').textContent = 'Sesión protegida';
-  q('dataModeLabel').textContent = 'Supabase Auth / chequeos en nube';
+  q('connectionStatus').textContent = 'Conectando con Supabase';
+  q('dataModeLabel').textContent = 'Supabase · cargando datos';
+
+  try {
+    await migrateLegacyDataToSupabase();
+    await loadOperationalDataFromSupabase({ silent: true });
+    q('connectionStatus').textContent = 'Sesión protegida';
+    q('dataModeLabel').textContent = 'Supabase · datos en nube';
+  } catch (error) {
+    console.error('No se pudieron cargar los datos operativos:', error);
+    q('connectionStatus').textContent = 'Sesión protegida';
+    q('dataModeLabel').textContent = 'Supabase · error de sincronización';
+    toast(error.message || 'No se pudieron cargar los datos desde Supabase.');
+  }
+
   renderAll();
-  loadPreUseChecksFromSupabase({ silent: true });
+  await loadPreUseChecksFromSupabase({ silent: true });
   subscribePreUseRealtime();
+  subscribeOperationalRealtime();
 }
 
 function updateUserInterface(user, profile) {
@@ -94,7 +112,7 @@ async function applySession(session) {
     currentProfile = await loadCurrentProfile(session.user);
     updateUserInterface(session.user, currentProfile);
     setAuthMessage('');
-    showApplication();
+    await showApplication();
   } catch (error) {
     currentProfile = null;
     await supabaseClient.auth.signOut();
@@ -143,16 +161,9 @@ const initialData = {
   incidents: [],
   maintenance: [],
   returns: [],
+  expenses: [],
   preUseChecks: []
 };
-
-let data = loadData();
-
-// Compatibilidad con versiones anteriores guardadas en el navegador.
-if (!Array.isArray(data.preUseChecks)) {
-  data.preUseChecks = [];
-  saveData();
-}
 
 function cloneInitialData() {
   return JSON.parse(JSON.stringify(initialData));
@@ -161,20 +172,31 @@ function cloneInitialData() {
 function loadData() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : cloneInitialData();
+    return saved ? { ...cloneInitialData(), ...JSON.parse(saved) } : cloneInitialData();
   } catch {
     return cloneInitialData();
   }
 }
 
+// Copia de los datos de las versiones anteriores. V14 la usa únicamente
+// para una migración automática de una sola vez hacia Supabase.
+const legacyLocalData = loadData();
+let data = JSON.parse(JSON.stringify(legacyLocalData));
+
+if (!Array.isArray(data.preUseChecks)) data.preUseChecks = [];
+if (!Array.isArray(data.expenses)) data.expenses = [];
+
+// Desde V14 la fuente real es Supabase. Esto es solo una caché local auxiliar.
 function saveData() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  try {
+    localStorage.setItem(CLOUD_CACHE_KEY, JSON.stringify(data));
+  } catch {}
 }
 
 function ensureAssignmentSnapshots() {
   let changed = false;
   data.assignments.forEach((assignment) => {
-    const driver = data.drivers.find((item) => item.id === Number(assignment.driverId));
+    const driver = data.drivers.find((item) => String(item.id) === String(assignment.driverId));
     if (!assignment.driverNameSnapshot && driver?.name) { assignment.driverNameSnapshot = driver.name; changed = true; }
     if (!assignment.driverDniSnapshot && driver?.dni) { assignment.driverDniSnapshot = driver.dni; changed = true; }
     if (!assignment.teamSnapshot) { assignment.teamSnapshot = assignment.team || driver?.team || ''; changed = true; }
@@ -239,46 +261,706 @@ async function getLocalFile(key) {
   });
 }
 
+
+function safeStorageName(name = 'archivo') {
+  return String(name)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'archivo';
+}
+
+function cloudFileKey(bucket, path) {
+  if (!bucket || !path) return null;
+  return `supabase:${bucket}:${encodeURIComponent(path)}`;
+}
+
+function parseCloudFileKey(key) {
+  const value = String(key || '');
+  if (!value.startsWith('supabase:')) return null;
+  const rest = value.slice('supabase:'.length);
+  const separator = rest.indexOf(':');
+  if (separator < 1) return null;
+  return {
+    bucket: rest.slice(0, separator),
+    path: decodeURIComponent(rest.slice(separator + 1))
+  };
+}
+
+function fileNameFromPath(path = '') {
+  const clean = String(path).split('?')[0];
+  try {
+    return decodeURIComponent(clean.split('/').pop() || 'Archivo');
+  } catch {
+    return clean.split('/').pop() || 'Archivo';
+  }
+}
+
+async function uploadSupabaseFile(bucket, file, folder = 'general') {
+  if (!supabaseClient || !file) return null;
+  const unique = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const path = `${folder}/${unique}/${safeStorageName(file.name)}`;
+  const { error } = await supabaseClient.storage
+    .from(bucket)
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || undefined
+    });
+  if (error) throw error;
+  return path;
+}
+
+async function removeSupabaseFile(bucket, path) {
+  if (!supabaseClient || !bucket || !path) return;
+  try {
+    await supabaseClient.storage.from(bucket).remove([path]);
+  } catch {}
+}
+
+async function insertAttachment({ entityType, entityId, category, bucket, path, file }) {
+  if (!supabaseClient || !entityId || !path || !file) return;
+  const payload = {
+    entity_type: entityType,
+    entity_id: entityId,
+    category,
+    bucket_name: bucket,
+    storage_path: path,
+    file_name: file.name,
+    mime_type: file.type || null,
+    file_size: Number(file.size || 0),
+    uploaded_by: currentProfile?.id || null
+  };
+  const { error } = await supabaseClient.from('attachments').insert(payload);
+  if (error) throw error;
+}
+
+function assignmentStatusFromDb(status) {
+  return status === 'Pendiente de devolución' ? 'Pendiente' : status;
+}
+
+function assignmentStatusToDb(status) {
+  return status === 'Pendiente' ? 'Pendiente de devolución' : status;
+}
+
+function mapVehicleRow(row) {
+  return {
+    id: row.id,
+    plate: row.plate || '',
+    brand: row.brand || '',
+    model: row.model || '',
+    type: row.vehicle_type || 'Camioneta',
+    ownership: row.ownership_type || 'Propia',
+    city: row.current_city || '',
+    odometer: Number(row.current_odometer || 0),
+    rent: Number(row.monthly_rent || 0),
+    status: row.status || 'Disponible',
+    notes: row.notes || '',
+    createdAt: row.created_at || ''
+  };
+}
+
+function mapDriverRow(row) {
+  return {
+    id: row.id,
+    name: row.full_name || '',
+    dni: row.dni || '',
+    license: row.license_number || '',
+    category: row.license_category || '',
+    expiry: row.license_expiry || '',
+    team: row.team || '',
+    project: row.project_name || '',
+    zone: row.zone || '',
+    city: row.city || '',
+    phone: row.phone || '',
+    status: row.status || 'Habilitado',
+    createdAt: row.created_at || ''
+  };
+}
+
+function mapAssignmentRow(row) {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    driverId: row.driver_id,
+    driverNameSnapshot: row.driver_name_snapshot || '',
+    driverDniSnapshot: row.driver_dni_snapshot || '',
+    teamSnapshot: row.team_snapshot || '',
+    projectSnapshot: row.project_snapshot || '',
+    zoneSnapshot: row.zone_snapshot || '',
+    date: row.assigned_date || '',
+    odometer: Number(row.start_odometer || 0),
+    team: row.team_snapshot || '',
+    zone: row.zone_snapshot || '',
+    location: row.delivery_location || row.operating_city || '',
+    expectedReturn: row.expected_return_date || '',
+    returnedAt: row.closed_at ? String(row.closed_at).slice(0, 10) : '',
+    status: assignmentStatusFromDb(row.status || 'Activa'),
+    notes: row.notes || '',
+    createdAt: row.created_at || ''
+  };
+}
+
+function mapDocumentRow(row) {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    type: row.document_type || 'Otro',
+    issued: row.issue_date || '',
+    expiry: row.expiry_date || '',
+    file: row.file_path ? fileNameFromPath(row.file_path) : 'Sin archivo',
+    mimeType: '',
+    fileStorageKey: row.file_path ? cloudFileKey('vehicle-documents', row.file_path) : null,
+    filePath: row.file_path || '',
+    status: row.document_status || 'Sin vencimiento'
+  };
+}
+
+function mapIncidentRow(row, attachment) {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    assignmentId: row.assignment_id || null,
+    responsibleDriverId: row.driver_id || null,
+    type: row.incident_type || 'Otro',
+    date: row.incident_at ? String(row.incident_at).slice(0, 10) : '',
+    severity: row.severity || 'Baja',
+    description: row.description || '',
+    status: row.status || 'Abierto',
+    solution: row.solution || '',
+    closedAt: row.closed_at || null,
+    location: row.location || '',
+    evidenceFile: attachment?.file_name || '',
+    fileStorageKey: attachment ? cloudFileKey(attachment.bucket_name, attachment.storage_path) : null
+  };
+}
+
+function mapMaintenanceRow(row, attachment) {
+  const actual = Number(row.actual_cost || 0);
+  const estimated = Number(row.estimated_cost || 0);
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    incidentId: row.incident_id || null,
+    type: row.maintenance_type || 'Preventivo',
+    workshop: row.workshop || '',
+    entry: row.entry_date || '',
+    exit: row.expected_exit_date || '',
+    actualExit: row.actual_exit_date || '',
+    odometer: Number(row.entry_odometer || 0),
+    cost: actual > 0 ? actual : estimated,
+    estimatedCost: estimated,
+    actualCost: actual,
+    description: row.work_description || '',
+    status: row.status || 'Programado',
+    evidenceFile: attachment?.file_name || '',
+    fileStorageKey: attachment ? cloudFileKey(attachment.bucket_name, attachment.storage_path) : null
+  };
+}
+
+function mapReturnRow(row, attachments = []) {
+  return {
+    id: row.id,
+    assignmentId: row.assignment_id,
+    requestDate: row.request_date || '',
+    dueDate: row.due_date || '',
+    returnDate: row.return_date || '',
+    location: row.return_location || '',
+    finalOdometer: Number(row.final_odometer || 0),
+    condition: row.general_condition || '',
+    fuel: row.fuel_level || '',
+    notes: row.notes || '',
+    emailEvidence: Boolean(row.email_evidence_path),
+    status: row.status || 'Pendiente',
+    evidenceFiles: attachments.map((item) => item.file_name),
+    fileStorageKeys: attachments.map((item) => cloudFileKey(item.bucket_name, item.storage_path))
+  };
+}
+
+function mapExpenseRow(row) {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    assignmentId: row.assignment_id || null,
+    incidentId: row.incident_id || null,
+    maintenanceId: row.maintenance_id || null,
+    category: row.expense_category || '',
+    description: row.description || '',
+    date: row.expense_date || '',
+    amount: Number(row.amount || 0),
+    provider: row.provider || ''
+  };
+}
+
+function attachmentsByEntity(rows = []) {
+  const map = new Map();
+  rows.forEach((item) => {
+    const key = `${item.entity_type}:${item.entity_id}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(item);
+  });
+  return map;
+}
+
+async function loadOperationalDataFromSupabase({ silent = false } = {}) {
+  if (!supabaseClient) return;
+
+  const [
+    vehiclesResult,
+    driversResult,
+    assignmentsResult,
+    documentsResult,
+    incidentsResult,
+    maintenanceResult,
+    returnsResult,
+    expensesResult,
+    attachmentsResult
+  ] = await Promise.all([
+    supabaseClient.from('vehicles').select('*').order('plate'),
+    supabaseClient.from('drivers').select('*').order('full_name'),
+    supabaseClient.from('vehicle_assignments').select('*').order('assigned_date', { ascending: false }),
+    supabaseClient.from('vehicle_documents_with_status').select('*').order('expiry_date', { ascending: true }),
+    supabaseClient.from('incidents').select('*').order('incident_at', { ascending: false }),
+    supabaseClient.from('maintenance_records').select('*').order('entry_date', { ascending: false }),
+    supabaseClient.from('vehicle_returns').select('*').order('created_at', { ascending: false }),
+    supabaseClient.from('expenses').select('*').order('expense_date', { ascending: false }),
+    supabaseClient.from('attachments').select('*').order('created_at', { ascending: false })
+  ]);
+
+  const results = [
+    vehiclesResult, driversResult, assignmentsResult, documentsResult,
+    incidentsResult, maintenanceResult, returnsResult, expensesResult, attachmentsResult
+  ];
+  const failed = results.find((result) => result.error);
+  if (failed?.error) throw failed.error;
+
+  const attachmentMap = attachmentsByEntity(attachmentsResult.data || []);
+  const preUseChecks = Array.isArray(data.preUseChecks) ? data.preUseChecks : [];
+
+  data = {
+    ...cloneInitialData(),
+    vehicles: (vehiclesResult.data || []).map(mapVehicleRow),
+    drivers: (driversResult.data || []).map(mapDriverRow),
+    assignments: (assignmentsResult.data || []).map(mapAssignmentRow),
+    documents: (documentsResult.data || []).map(mapDocumentRow),
+    incidents: (incidentsResult.data || []).map((row) =>
+      mapIncidentRow(row, (attachmentMap.get(`incident:${row.id}`) || [])[0])
+    ),
+    maintenance: (maintenanceResult.data || []).map((row) =>
+      mapMaintenanceRow(row, (attachmentMap.get(`maintenance:${row.id}`) || [])[0])
+    ),
+    returns: (returnsResult.data || []).map((row) =>
+      mapReturnRow(row, attachmentMap.get(`return:${row.id}`) || [])
+    ),
+    expenses: (expensesResult.data || []).map(mapExpenseRow),
+    preUseChecks
+  };
+
+  // La fecha real de devolución tiene prioridad sobre closed_at.
+  data.returns.forEach((item) => {
+    const assignment = assignmentById(item.assignmentId);
+    if (assignment && item.returnDate) assignment.returnedAt = item.returnDate;
+  });
+
+  ensureAssignmentSnapshots();
+  saveData();
+  renderAll();
+  if (!silent) toast('Datos actualizados desde Supabase.');
+}
+
+function scheduleOperationalReload() {
+  clearTimeout(operationalReloadTimer);
+  operationalReloadTimer = setTimeout(() => {
+    loadOperationalDataFromSupabase({ silent: true }).catch((error) => console.warn('Sincronización Realtime:', error));
+  }, 350);
+}
+
+function subscribeOperationalRealtime() {
+  if (!supabaseClient || operationalRealtimeChannel) return;
+  const tables = [
+    'vehicles', 'drivers', 'vehicle_assignments', 'vehicle_documents',
+    'incidents', 'maintenance_records', 'vehicle_returns', 'expenses', 'attachments'
+  ];
+  let channel = supabaseClient.channel('fleetguard-operational-admin');
+  tables.forEach((table) => {
+    channel = channel.on('postgres_changes', { event: '*', schema: 'public', table }, scheduleOperationalReload);
+  });
+  operationalRealtimeChannel = channel.subscribe((status) => {
+    if (status === 'CHANNEL_ERROR') {
+      console.warn('Realtime operativo no está habilitado para todas las tablas. Los datos siguen guardándose en Supabase y se verán al recargar.');
+    }
+  });
+}
+
+function legacyHasOperationalData(source) {
+  return ['vehicles','drivers','assignments','documents','incidents','maintenance','returns']
+    .some((key) => Array.isArray(source?.[key]) && source[key].length > 0);
+}
+
+async function maybeUploadLegacyLocalFile(localKey, bucket, folder) {
+  if (!localKey) return null;
+  try {
+    const record = await getLocalFile(localKey);
+    if (!record?.blob) return null;
+    const file = new File([record.blob], record.name || 'archivo', { type: record.type || 'application/octet-stream' });
+    const path = await uploadSupabaseFile(bucket, file, folder);
+    return { path, file };
+  } catch (error) {
+    console.warn('No se pudo migrar un archivo local:', error);
+    return null;
+  }
+}
+
+async function migrateLegacyDataToSupabase() {
+  if (!supabaseClient || !legacyHasOperationalData(legacyLocalData)) return;
+  if (localStorage.getItem(MIGRATION_FLAG) === 'done') return;
+
+  const vehicleMap = new Map();
+  const driverMap = new Map();
+  const assignmentMap = new Map();
+
+  // 1) Unidades
+  for (const vehicle of legacyLocalData.vehicles || []) {
+    const plate = String(vehicle.plate || '').trim().toUpperCase();
+    if (!plate) continue;
+    let { data: existing, error: lookupError } = await supabaseClient
+      .from('vehicles').select('id').eq('plate', plate).maybeSingle();
+    if (lookupError) throw lookupError;
+
+    if (!existing) {
+      const payload = {
+        plate,
+        brand: String(vehicle.brand || 'Sin marca').trim(),
+        model: String(vehicle.model || 'Sin modelo').trim(),
+        vehicle_type: vehicle.type || 'Camioneta',
+        ownership_type: vehicle.ownership || 'Propia',
+        current_city: String(vehicle.city || 'Sin especificar').trim(),
+        current_odometer: Number(vehicle.odometer || 0),
+        monthly_rent: Number(vehicle.rent || 0),
+        status: ['Baja','Fuera de servicio'].includes(vehicle.status) ? vehicle.status : 'Disponible',
+        notes: vehicle.notes || null,
+        created_by: currentProfile?.id || null
+      };
+      const { data: inserted, error } = await supabaseClient.from('vehicles').insert(payload).select('id').single();
+      if (error) throw error;
+      existing = inserted;
+    }
+    vehicleMap.set(String(vehicle.id), existing.id);
+  }
+
+  // 2) Conductores
+  for (const driver of legacyLocalData.drivers || []) {
+    const dni = String(driver.dni || '').replace(/\D/g, '').slice(0, 8);
+    if (dni.length !== 8) continue;
+    let { data: existing, error: lookupError } = await supabaseClient
+      .from('drivers').select('id').eq('dni', dni).maybeSingle();
+    if (lookupError) throw lookupError;
+
+    if (!existing) {
+      const payload = {
+        full_name: String(driver.name || 'Sin nombre').trim(),
+        dni,
+        phone: driver.phone || null,
+        team: driver.team || null,
+        zone: driver.zone || null,
+        license_number: String(driver.license || `LIC-${dni}`).trim(),
+        license_category: String(driver.category || 'Sin categoría').trim(),
+        license_expiry: driver.expiry || '2099-12-31',
+        status: driver.status || 'Habilitado',
+        created_by: currentProfile?.id || null
+      };
+      const { data: inserted, error } = await supabaseClient.from('drivers').insert(payload).select('id').single();
+      if (error) throw error;
+      existing = inserted;
+    }
+    driverMap.set(String(driver.id), existing.id);
+  }
+
+  // 3) Asignaciones históricas primero; abiertas al final.
+  const legacyAssignments = [...(legacyLocalData.assignments || [])].sort((a, b) => {
+    const aOpen = ['Activa','Pendiente','Pendiente de devolución'].includes(a.status) ? 1 : 0;
+    const bOpen = ['Activa','Pendiente','Pendiente de devolución'].includes(b.status) ? 1 : 0;
+    return aOpen - bOpen || String(a.date || '').localeCompare(String(b.date || ''));
+  });
+
+  for (const assignment of legacyAssignments) {
+    const vehicleId = vehicleMap.get(String(assignment.vehicleId));
+    const driverId = driverMap.get(String(assignment.driverId));
+    if (!vehicleId || !driverId || !assignment.date) continue;
+
+    let query = supabaseClient.from('vehicle_assignments')
+      .select('id')
+      .eq('vehicle_id', vehicleId)
+      .eq('driver_id', driverId)
+      .eq('assigned_date', assignment.date)
+      .eq('start_odometer', Number(assignment.odometer || 0))
+      .limit(1);
+    const { data: matches, error: lookupError } = await query;
+    if (lookupError) throw lookupError;
+    let existing = matches?.[0] || null;
+
+    if (!existing) {
+      const payload = {
+        vehicle_id: vehicleId,
+        driver_id: driverId,
+        driver_name_snapshot: assignment.driverNameSnapshot || driverByLegacyId(assignment.driverId)?.name || 'Conductor',
+        driver_dni_snapshot: assignment.driverDniSnapshot || driverByLegacyId(assignment.driverId)?.dni || '00000000',
+        team_snapshot: assignment.teamSnapshot || assignment.team || null,
+        zone_snapshot: assignment.zoneSnapshot || assignment.zone || null,
+        operating_city: assignment.location || null,
+        assigned_date: assignment.date,
+        expected_return_date: assignment.expectedReturn || null,
+        delivery_location: assignment.location || 'Sin especificar',
+        start_odometer: Number(assignment.odometer || 0),
+        purpose: null,
+        notes: assignment.notes || null,
+        status: assignmentStatusToDb(assignment.status || 'Activa'),
+        closed_at: assignment.status === 'Cerrada'
+          ? new Date(`${assignment.returnedAt || assignment.date}T12:00:00`).toISOString()
+          : null,
+        created_by: currentProfile?.id || null
+      };
+      const { data: inserted, error } = await supabaseClient.from('vehicle_assignments').insert(payload).select('id').single();
+      if (error) throw error;
+      existing = inserted;
+    }
+    assignmentMap.set(String(assignment.id), existing.id);
+  }
+
+  // 4) Documentos
+  for (const documentItem of legacyLocalData.documents || []) {
+    const vehicleId = vehicleMap.get(String(documentItem.vehicleId));
+    if (!vehicleId) continue;
+    const { data: matches, error: lookupError } = await supabaseClient
+      .from('vehicle_documents')
+      .select('id,file_path')
+      .eq('vehicle_id', vehicleId)
+      .eq('document_type', documentItem.type || 'Otro')
+      .eq('issue_date', documentItem.issued || null)
+      .eq('expiry_date', documentItem.expiry || null)
+      .limit(1);
+    if (lookupError) throw lookupError;
+    if (matches?.length) continue;
+
+    let migratedFile = null;
+    if (documentItem.fileStorageKey) {
+      migratedFile = await maybeUploadLegacyLocalFile(
+        documentItem.fileStorageKey, 'vehicle-documents',
+        `migracion/${String(documentItem.vehicleId)}`
+      );
+    }
+    const { error } = await supabaseClient.from('vehicle_documents').insert({
+      vehicle_id: vehicleId,
+      document_type: documentItem.type || 'Otro',
+      issue_date: documentItem.issued || null,
+      expiry_date: documentItem.expiry || null,
+      file_path: migratedFile?.path || null,
+      created_by: currentProfile?.id || null
+    });
+    if (error) {
+      if (migratedFile?.path) await removeSupabaseFile('vehicle-documents', migratedFile.path);
+      throw error;
+    }
+  }
+
+  // 5) Incidentes
+  for (const incident of legacyLocalData.incidents || []) {
+    const vehicleId = vehicleMap.get(String(incident.vehicleId));
+    if (!vehicleId || !incident.date) continue;
+    const assignmentId = assignmentMap.get(String(incident.assignmentId)) || null;
+    const driverId = driverMap.get(String(incident.responsibleDriverId)) || null;
+    const { data: matches, error: lookupError } = await supabaseClient.from('incidents')
+      .select('id').eq('vehicle_id', vehicleId)
+      .eq('incident_type', incident.type || 'Otro')
+      .gte('incident_at', `${incident.date}T00:00:00`)
+      .lt('incident_at', `${incident.date}T23:59:59.999`)
+      .limit(1);
+    if (lookupError) throw lookupError;
+    if (matches?.length) continue;
+
+    const { data: inserted, error } = await supabaseClient.from('incidents').insert({
+      vehicle_id: vehicleId,
+      assignment_id: assignmentId,
+      driver_id: driverId,
+      incident_type: incident.type || 'Otro',
+      severity: incident.severity || 'Baja',
+      incident_at: new Date(`${incident.date}T12:00:00`).toISOString(),
+      description: incident.description || 'Sin descripción',
+      status: incident.status || 'Abierto',
+      solution: incident.solution || null,
+      closed_at: incident.status === 'Cerrado' ? new Date().toISOString() : null,
+      created_by: currentProfile?.id || null
+    }).select('id').single();
+    if (error) throw error;
+
+    const migratedFile = await maybeUploadLegacyLocalFile(
+      incident.fileStorageKey, 'incident-evidence', `migracion/${vehicleId}`
+    );
+    if (migratedFile) {
+      await insertAttachment({
+        entityType: 'incident', entityId: inserted.id, category: 'Evidencia',
+        bucket: 'incident-evidence', path: migratedFile.path, file: migratedFile.file
+      });
+    }
+  }
+
+  // 6) Mantenimientos
+  for (const maintenance of legacyLocalData.maintenance || []) {
+    const vehicleId = vehicleMap.get(String(maintenance.vehicleId));
+    if (!vehicleId || !maintenance.entry) continue;
+    const { data: matches, error: lookupError } = await supabaseClient.from('maintenance_records')
+      .select('id').eq('vehicle_id', vehicleId)
+      .eq('maintenance_type', maintenance.type || 'Preventivo')
+      .eq('entry_date', maintenance.entry)
+      .eq('workshop', maintenance.workshop || 'Sin especificar')
+      .limit(1);
+    if (lookupError) throw lookupError;
+    if (matches?.length) continue;
+
+    const { data: inserted, error } = await supabaseClient.from('maintenance_records').insert({
+      vehicle_id: vehicleId,
+      maintenance_type: maintenance.type || 'Preventivo',
+      workshop: maintenance.workshop || 'Sin especificar',
+      entry_date: maintenance.entry,
+      expected_exit_date: maintenance.exit || null,
+      actual_exit_date: maintenance.actualExit || null,
+      work_description: maintenance.description || 'Sin descripción',
+      estimated_cost: Number(maintenance.cost || 0),
+      actual_cost: maintenance.status === 'Completado' ? Number(maintenance.cost || 0) : 0,
+      status: maintenance.status || 'Programado',
+      created_by: currentProfile?.id || null
+    }).select('id').single();
+    if (error) throw error;
+
+    const migratedFile = await maybeUploadLegacyLocalFile(
+      maintenance.fileStorageKey, 'maintenance-evidence', `migracion/${vehicleId}`
+    );
+    if (migratedFile) {
+      await insertAttachment({
+        entityType: 'maintenance', entityId: inserted.id, category: 'Evidencia',
+        bucket: 'maintenance-evidence', path: migratedFile.path, file: migratedFile.file
+      });
+    }
+  }
+
+  // 7) Devoluciones
+  for (const returnItem of legacyLocalData.returns || []) {
+    const assignmentId = assignmentMap.get(String(returnItem.assignmentId));
+    if (!assignmentId) continue;
+    const { data: existing, error: lookupError } = await supabaseClient
+      .from('vehicle_returns').select('id').eq('assignment_id', assignmentId).maybeSingle();
+    if (lookupError) throw lookupError;
+    if (existing) continue;
+
+    const legacyAssignment = (legacyLocalData.assignments || []).find((item) => String(item.id) === String(returnItem.assignmentId));
+    const finalOdometer = Number(legacyAssignment?.returnOdometer || 0);
+    if (returnItem.status === 'Devuelto' && !finalOdometer) continue;
+
+    const { data: inserted, error } = await supabaseClient.from('vehicle_returns').insert({
+      assignment_id: assignmentId,
+      request_date: returnItem.requestDate || null,
+      due_date: returnItem.dueDate || null,
+      return_date: returnItem.status === 'Devuelto' ? (legacyAssignment?.returnedAt || returnItem.requestDate || new Date().toISOString().slice(0,10)) : null,
+      return_location: returnItem.location || legacyAssignment?.returnLocation || null,
+      final_odometer: finalOdometer || null,
+      general_condition: legacyAssignment?.returnCondition || null,
+      notes: legacyAssignment?.returnNotes || null,
+      status: returnItem.status || 'Pendiente',
+      created_by: currentProfile?.id || null
+    }).select('id').single();
+    if (error) throw error;
+
+    const keys = returnItem.fileStorageKeys || [];
+    for (let index = 0; index < keys.length; index += 1) {
+      const migratedFile = await maybeUploadLegacyLocalFile(
+        keys[index], 'vehicle-photos', `devoluciones/${assignmentId}`
+      );
+      if (migratedFile) {
+        await insertAttachment({
+          entityType: 'return', entityId: inserted.id, category: 'Foto de devolución',
+          bucket: 'vehicle-photos', path: migratedFile.path, file: migratedFile.file
+        });
+      }
+    }
+  }
+
+  localStorage.setItem(MIGRATION_FLAG, 'done');
+  toast('Los registros locales anteriores se migraron a Supabase.');
+}
+
+function driverByLegacyId(id) {
+  return (legacyLocalData.drivers || []).find((item) => String(item.id) === String(id));
+}
+
 async function openStoredFile(key, title = 'Archivo') {
   try {
-    const record = await getLocalFile(key);
-    if (!record?.blob) {
-      toast('El archivo físico no está disponible en este navegador.');
-      return;
-    }
+    const cloud = parseCloudFileKey(key);
     const modal = q('fileViewerModal');
-    if (modal.dataset.objectUrl) URL.revokeObjectURL(modal.dataset.objectUrl);
-    const url = URL.createObjectURL(record.blob);
-    modal.dataset.objectUrl = url;
+    if (modal.dataset.objectUrl) {
+      URL.revokeObjectURL(modal.dataset.objectUrl);
+      modal.dataset.objectUrl = '';
+    }
+
+    let url = '';
+    let name = '';
+    let type = '';
+
+    if (cloud) {
+      if (!supabaseClient) throw new Error('No existe conexión con Supabase.');
+      const { data: signed, error } = await supabaseClient.storage
+        .from(cloud.bucket)
+        .createSignedUrl(cloud.path, 600);
+      if (error) throw error;
+      url = signed?.signedUrl || '';
+      name = fileNameFromPath(cloud.path);
+      type = name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : '';
+      if (!url) throw new Error('No se pudo generar el enlace temporal del archivo.');
+    } else {
+      const record = await getLocalFile(key);
+      if (!record?.blob) {
+        toast('El archivo físico no está disponible.');
+        return;
+      }
+      url = URL.createObjectURL(record.blob);
+      modal.dataset.objectUrl = url;
+      name = record.name;
+      type = String(record.type || '');
+    }
+
     q('fileViewerTitle').textContent = title;
-    q('fileViewerName').textContent = `${record.name} · ${(record.size / 1024 / 1024).toFixed(2)} MB`;
+    q('fileViewerName').textContent = name || 'Archivo';
     const download = q('fileDownloadButton');
     download.href = url;
-    download.download = record.name;
-    const type = String(record.type || '');
-    if (type.startsWith('image/')) {
+    download.download = name || 'archivo';
+
+    const lowerName = String(name || '').toLowerCase();
+    const looksImage = type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(lowerName);
+    const looksPdf = type === 'application/pdf' || lowerName.endsWith('.pdf');
+
+    if (looksImage) {
       q('fileViewerContent').innerHTML = `<img src="${url}" alt="${escapeHtml(title)}">`;
-    } else if (type === 'application/pdf' || record.name.toLowerCase().endsWith('.pdf')) {
+    } else if (looksPdf) {
       q('fileViewerContent').innerHTML = `<iframe src="${url}#toolbar=1&navpanes=1" title="${escapeHtml(title)}"></iframe>`;
     } else {
       q('fileViewerContent').innerHTML = '<div class="file-viewer-placeholder"><strong>Vista previa no disponible</strong><p>Utiliza el botón Descargar para abrir este tipo de archivo.</p></div>';
     }
     openModal('fileViewerModal');
   } catch (error) {
+    console.error(error);
     toast(error.message || 'No se pudo abrir el archivo.');
   }
 }
 
 function fileButton(record, label = 'Visualizar archivo') {
   if (!record?.fileStorageKey) {
-    return `<button class="row-action file-action-button" type="button" disabled title="El archivo físico no está guardado en este navegador">${escapeHtml(record?.file || 'Sin archivo')}</button>`;
+    return `<button class="row-action file-action-button" type="button" disabled title="No hay archivo cargado">${escapeHtml(record?.file || 'Sin archivo')}</button>`;
   }
   return `<button class="row-action file-action-button" type="button" data-open-file="${escapeHtml(record.fileStorageKey)}" data-file-title="${escapeHtml(label)}">Visualizar</button>`;
 }
 
-function vehicleById(id) { return data.vehicles.find((v) => v.id === Number(id)); }
-function driverById(id) { return data.drivers.find((d) => d.id === Number(id)); }
-function assignmentById(id) { return data.assignments.find((a) => a.id === Number(id)); }
+function vehicleById(id) { return data.vehicles.find((v) => String(v.id) === String(id)); }
+function driverById(id) { return data.drivers.find((d) => String(d.id) === String(id)); }
+function assignmentById(id) { return data.assignments.find((a) => String(a.id) === String(id)); }
 
 function assignmentDriverName(assignment) {
   return assignment?.driverNameSnapshot || driverById(assignment?.driverId)?.name || 'Sin conductor';
@@ -296,7 +978,7 @@ function findAssignmentAtDate(vehicleId, dateValue) {
   if (!vehicleId || !dateValue) return null;
   const date = String(dateValue).slice(0, 10);
   return [...data.assignments]
-    .filter((assignment) => Number(assignment.vehicleId) === Number(vehicleId))
+    .filter((assignment) => String(assignment.vehicleId) === String(vehicleId))
     .filter((assignment) => {
       const start = String(assignment.date || '').slice(0, 10);
       const end = assignmentEndDate(assignment);
@@ -1083,13 +1765,13 @@ function openDetail(type, id) {
     ].join('');
     actions = `<div class="modal-actions">${item.photoPath ? `<button class="secondary-button" type="button" data-preuse-photo="${escapeHtml(item.photoPath)}" data-photo-name="${escapeHtml(item.photoFile || 'Foto pre-uso')}" data-photo-title="Foto panorámica pre-uso">Visualizar foto panorámica</button>` : ''}<button class="primary-button" type="button" data-edit-preuse="${escapeHtml(item.id)}">Editar registro</button></div>`;
   } else if (type === 'document') {
-    const item = data.documents.find((documentItem) => documentItem.id === Number(id)); if (!item) return;
+    const item = data.documents.find((documentItem) => String(documentItem.id) === String(id)); if (!item) return;
     const vehicle = vehicleById(item.vehicleId);
     title = item.type; eyebrow = `Documento de ${vehicle?.plate || 'unidad'}`;
     content = [detailField('Unidad', vehicle?.plate), detailField('Emisión', formatDate(item.issued)), detailField('Vencimiento', formatDate(item.expiry)), detailField('Estado', item.status), detailField('Archivo registrado', item.file || 'Pendiente de carga')].join('');
     actions = item.fileStorageKey ? `<div class="modal-actions"><button class="primary-button" type="button" data-open-file="${escapeHtml(item.fileStorageKey)}" data-file-title="${escapeHtml(item.type)} / ${escapeHtml(vehicle?.plate || 'Unidad')}">Visualizar archivo</button></div>` : '<span class="inline-note">Este registro aún no tiene un archivo físico cargado en este navegador; adjunta uno nuevo para poder visualizarlo.</span>';
   } else if (type === 'incident') {
-    const item = data.incidents.find((incident) => incident.id === Number(id)); if (!item) return;
+    const item = data.incidents.find((incident) => String(incident.id) === String(id)); if (!item) return;
     const vehicle = vehicleById(item.vehicleId);
     title = item.type; eyebrow = `Incidente / ${vehicle?.plate || 'unidad'}`;
     const responsible = incidentResponsible(item);
@@ -1106,13 +1788,13 @@ function openDetail(type, id) {
     content = [detailField('Fecha', formatDate(item.date)), detailField('Gravedad', item.severity), detailField('Estado', item.status), detailField('Ubicación de la unidad', vehicle?.city), ...responsibleFields, detailField('Descripción', item.description), detailField('Solución', item.solution || 'Pendiente')].join('');
     actions = item.fileStorageKey ? `<div class="modal-actions"><button class="secondary-button" type="button" data-open-file="${escapeHtml(item.fileStorageKey)}" data-file-title="Evidencia del incidente">Visualizar evidencia</button></div>` : '';
   } else if (type === 'maintenance') {
-    const item = data.maintenance.find((maintenance) => maintenance.id === Number(id)); if (!item) return;
+    const item = data.maintenance.find((maintenance) => String(maintenance.id) === String(id)); if (!item) return;
     const vehicle = vehicleById(item.vehicleId);
     title = `${item.type} / ${vehicle?.plate || ''}`; eyebrow = 'Orden de mantenimiento';
     content = [detailField('Taller', item.workshop), detailField('Ingreso', formatDate(item.entry)), detailField('Salida estimada', formatDate(item.exit)), detailField('Costo', money(item.cost)), detailField('Estado', item.status), detailField('Trabajo', item.description)].join('');
     actions = item.fileStorageKey ? `<div class="modal-actions"><button class="secondary-button" type="button" data-open-file="${escapeHtml(item.fileStorageKey)}" data-file-title="Evidencia de mantenimiento">Visualizar archivo</button></div>` : '';
   } else if (type === 'return') {
-    const item = data.returns.find((returnItem) => returnItem.id === Number(id)); if (!item) return;
+    const item = data.returns.find((returnItem) => String(returnItem.id) === String(id)); if (!item) return;
     const assignment = assignmentById(item.assignmentId); const vehicle = vehicleById(assignment?.vehicleId); const driver = driverById(assignment?.driverId);
     title = `Devolución ${vehicle?.plate || ''}`; eyebrow = 'Cierre de asignación';
     content = [detailField('Conductor', assignmentDriverName(assignment)), detailField('Solicitud', formatDate(item.requestDate)), detailField('Fecha límite', formatDate(item.dueDate)), detailField('Lugar', item.location), detailField('Evidencia de correo', item.emailEvidence ? 'Registrada' : 'Pendiente'), detailField('Estado', item.status)].join('');
@@ -1306,33 +1988,41 @@ function recalculateVehicleFromOperations(vehicleId) {
   else vehicle.status = 'Disponible';
 }
 
-function updateRecordStatus(type, id, status) {
-  const numericId = Number(id);
-  if (type === 'incident') {
-    const item = data.incidents.find((record) => record.id === numericId);
-    if (!item) return;
-    item.status = status;
-    item.closedAt = status === 'Cerrado' ? new Date().toISOString() : null;
-  } else if (type === 'maintenance') {
-    const item = data.maintenance.find((record) => record.id === numericId);
-    if (!item) return;
-    item.status = status;
-    if (status === 'Completado' && !item.actualExit) item.actualExit = new Date().toISOString().slice(0,10);
-    recalculateVehicleFromOperations(item.vehicleId);
-  } else if (type === 'assignment') {
-    const item = data.assignments.find((record) => record.id === numericId);
-    if (!item) return;
-    item.status = status;
-    if (status === 'Cerrada' && !item.returnedAt) item.returnedAt = new Date().toISOString().slice(0,10);
-    recalculateVehicleFromOperations(item.vehicleId);
-  } else if (type === 'return') {
-    const item = data.returns.find((record) => record.id === numericId);
-    if (!item) return;
-    item.status = status;
+async function updateRecordStatus(type, id, status) {
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
+
+  try {
+    if (type === 'incident') {
+      const payload = {
+        status,
+        closed_at: status === 'Cerrado' ? new Date().toISOString() : null
+      };
+      const { error } = await supabaseClient.from('incidents').update(payload).eq('id', id);
+      if (error) throw error;
+    } else if (type === 'maintenance') {
+      const payload = { status };
+      if (status === 'Completado') payload.actual_exit_date = new Date().toISOString().slice(0, 10);
+      const { error } = await supabaseClient.from('maintenance_records').update(payload).eq('id', id);
+      if (error) throw error;
+    } else if (type === 'assignment') {
+      const payload = {
+        status: assignmentStatusToDb(status),
+        closed_at: status === 'Cerrada' ? new Date().toISOString() : null
+      };
+      const { error } = await supabaseClient.from('vehicle_assignments').update(payload).eq('id', id);
+      if (error) throw error;
+    } else if (type === 'return') {
+      const { error } = await supabaseClient.from('vehicle_returns').update({ status }).eq('id', id);
+      if (error) throw error;
+    }
+
+    await loadOperationalDataFromSupabase({ silent: true });
+    toast(`Estado actualizado a ${status}.`);
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'No se pudo actualizar el estado.');
+    await loadOperationalDataFromSupabase({ silent: true }).catch(() => {});
   }
-  saveData();
-  renderAll();
-  toast(`Estado actualizado a ${status}.`);
 }
 
 function resetDriverFormForNew() {
@@ -1431,7 +2121,7 @@ q('preUseEditForm').addEventListener('change', (event) => {
 });
 
 // Delegación para botones generados dinámicamente
- document.addEventListener('click', (event) => {
+ document.addEventListener('click', async (event) => {
   const editPreUseButton = event.target.closest('[data-edit-preuse]');
   if (editPreUseButton) {
     event.preventDefault();
@@ -1476,13 +2166,20 @@ q('preUseEditForm').addEventListener('change', (event) => {
 
   const deleteButton = event.target.closest('[data-delete-vehicle]');
   if (deleteButton) {
-    const id = Number(deleteButton.dataset.deleteVehicle);
+    const id = deleteButton.dataset.deleteVehicle;
     const vehicle = vehicleById(id);
-    const linked = data.assignments.some((assignment) => assignment.vehicleId === id);
+    const linked = data.assignments.some((assignment) => String(assignment.vehicleId) === String(id));
     if (linked) { toast('No se puede eliminar la unidad porque tiene historial.'); return; }
     if (!window.confirm(`¿Eliminar la unidad ${vehicle?.plate || ''}?`)) return;
-    data.vehicles = data.vehicles.filter((item) => item.id !== id);
-    saveData(); renderAll(); toast('Unidad eliminada.');
+    try {
+      const { error } = await supabaseClient.from('vehicles').delete().eq('id', id);
+      if (error) throw error;
+      await loadOperationalDataFromSupabase({ silent: true });
+      toast('Unidad eliminada de Supabase.');
+    } catch (error) {
+      console.error(error);
+      toast(error.message || 'No se pudo eliminar la unidad.');
+    }
     return;
   }
 
@@ -1505,60 +2202,135 @@ document.addEventListener('keydown', (event) => {
 });
 
 // Formularios operativos
-q('vehicleForm').addEventListener('submit', (event) => {
+q('vehicleForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
   const form = formObject(event.currentTarget);
   const plate = form.plate.toUpperCase().trim();
-  if (data.vehicles.some((vehicle) => normalize(vehicle.plate) === normalize(plate))) { toast('La placa ya está registrada.'); return; }
-  data.vehicles.push({ id: nextId(data.vehicles), plate, brand: form.brand.trim(), model: form.model.trim(), type: form.type, ownership: form.ownership, city: form.city.trim(), odometer: Number(form.odometer), rent: Number(form.rent || 0), status: 'Disponible', notes: form.notes });
-  saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('vehicleModal')); toast('Unidad registrada correctamente.');
-});
-
-q('driverForm').addEventListener('submit', (event) => {
-  event.preventDefault();
-  const form = formObject(event.currentTarget);
-  const editId = Number(form.editId || 0);
-  const duplicateDni = data.drivers.some((driver) => driver.dni === form.dni && driver.id !== editId);
-  const duplicateLicense = data.drivers.some((driver) => normalize(driver.license) === normalize(form.license) && driver.id !== editId);
-  if (duplicateDni) { toast('El DNI ya está registrado en otro conductor.'); return; }
-  if (duplicateLicense) { toast('La licencia ya está registrada en otro conductor.'); return; }
-
-  const values = {
-    name: form.name.trim(),
-    dni: form.dni,
-    license: form.license.trim(),
-    category: form.category.trim(),
-    expiry: form.expiry,
-    team: form.team.trim(),
-    zone: form.zone.trim(),
-    phone: form.phone.trim(),
-    status: form.status || 'Habilitado'
-  };
-
-  if (editId) {
-    const driver = driverById(editId);
-    if (!driver) { toast('No se encontró el conductor a editar.'); return; }
-    Object.assign(driver, values);
-    saveData(); renderAll(); resetDriverFormForNew(); closeModal(q('driverModal')); toast('Información del conductor actualizada.');
+  if (data.vehicles.some((vehicle) => normalize(vehicle.plate) === normalize(plate))) {
+    toast('La placa ya está registrada.');
     return;
   }
 
-  data.drivers.push({ id: nextId(data.drivers), ...values });
-  saveData(); renderAll(); resetDriverFormForNew(); closeModal(q('driverModal')); toast('Conductor registrado correctamente.');
+  try {
+    const { error } = await supabaseClient.from('vehicles').insert({
+      plate,
+      brand: form.brand.trim(),
+      model: form.model.trim(),
+      vehicle_type: form.type,
+      ownership_type: form.ownership,
+      current_city: form.city.trim(),
+      current_odometer: Number(form.odometer || 0),
+      monthly_rent: Number(form.rent || 0),
+      status: 'Disponible',
+      notes: form.notes?.trim() || null,
+      created_by: currentProfile?.id || null
+    });
+    if (error) throw error;
+
+    await loadOperationalDataFromSupabase({ silent: true });
+    event.currentTarget.reset();
+    closeModal(q('vehicleModal'));
+    toast('Unidad registrada en Supabase.');
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'No se pudo registrar la unidad.');
+  }
 });
 
-q('assignmentForm').addEventListener('submit', (event) => {
+q('driverForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
   const form = formObject(event.currentTarget);
-  const vehicleId = Number(form.vehicle);
+  const editId = String(form.editId || '').trim();
+  const duplicateDni = data.drivers.some((driver) => driver.dni === form.dni && String(driver.id) !== editId);
+  const duplicateLicense = data.drivers.some((driver) => normalize(driver.license) === normalize(form.license) && String(driver.id) !== editId);
+  if (duplicateDni) { toast('El DNI ya está registrado en otro conductor.'); return; }
+  if (duplicateLicense) { toast('La licencia ya está registrada en otro conductor.'); return; }
+
+  const payload = {
+    full_name: form.name.trim(),
+    dni: form.dni,
+    license_number: form.license.trim(),
+    license_category: form.category.trim(),
+    license_expiry: form.expiry,
+    team: form.team.trim() || null,
+    zone: form.zone.trim() || null,
+    phone: form.phone.trim() || null,
+    status: form.status || 'Habilitado'
+  };
+
+  try {
+    if (editId) {
+      const { error } = await supabaseClient.from('drivers').update(payload).eq('id', editId);
+      if (error) throw error;
+      toast('Información del conductor actualizada en Supabase.');
+    } else {
+      payload.created_by = currentProfile?.id || null;
+      const { error } = await supabaseClient.from('drivers').insert(payload);
+      if (error) throw error;
+      toast('Conductor registrado en Supabase.');
+    }
+
+    await loadOperationalDataFromSupabase({ silent: true });
+    resetDriverFormForNew();
+    closeModal(q('driverModal'));
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'No se pudo guardar el conductor.');
+  }
+});
+
+q('assignmentForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
+  const form = formObject(event.currentTarget);
+  const vehicleId = String(form.vehicle || '');
+  const driverId = String(form.driver || '');
   const vehicle = vehicleById(vehicleId);
+  const driver = driverById(driverId);
+
   if (!vehicle) { toast('Selecciona una unidad disponible.'); return; }
-  const hasActive = data.assignments.some((assignment) => assignment.vehicleId === vehicleId && ['Activa', 'Pendiente'].includes(assignment.status));
-  if (hasActive || vehicle.status !== 'Disponible') { toast('Esta unidad no está disponible para una nueva asignación.'); return; }
-  if (Number(form.odometer) < Number(vehicle.odometer)) { toast('El odómetro de salida no puede ser menor al actual.'); return; }
-  const assignedDriver = driverById(form.driver);
-  data.assignments.push({ id: nextId(data.assignments), vehicleId, driverId: Number(form.driver), driverNameSnapshot: assignedDriver?.name || '', driverDniSnapshot: assignedDriver?.dni || '', teamSnapshot: form.team.trim(), zoneSnapshot: form.zone.trim(), date: form.date, odometer: Number(form.odometer), team: form.team.trim(), zone: form.zone.trim(), location: form.location.trim(), expectedReturn: form.expectedReturn, status: 'Activa', notes: form.notes });
-  setVehicleStatus(vehicleId, 'Asignada'); saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('assignmentModal')); toast('Asignación creada correctamente.');
+  if (!driver) { toast('Selecciona un conductor válido.'); return; }
+  const hasActive = data.assignments.some((assignment) =>
+    String(assignment.vehicleId) === vehicleId && ['Activa', 'Pendiente'].includes(assignment.status)
+  );
+  if (hasActive || vehicle.status !== 'Disponible') {
+    toast('Esta unidad no está disponible para una nueva asignación.');
+    return;
+  }
+  if (Number(form.odometer) < Number(vehicle.odometer)) {
+    toast('El odómetro de salida no puede ser menor al actual.');
+    return;
+  }
+
+  try {
+    const { error } = await supabaseClient.from('vehicle_assignments').insert({
+      vehicle_id: vehicleId,
+      driver_id: driverId,
+      driver_name_snapshot: driver.name,
+      driver_dni_snapshot: driver.dni,
+      team_snapshot: driver.team || form.team.trim() || null,
+      zone_snapshot: driver.zone || form.zone.trim() || null,
+      operating_city: form.location.trim() || null,
+      assigned_date: form.date,
+      expected_return_date: form.expectedReturn || null,
+      delivery_location: form.location.trim(),
+      start_odometer: Number(form.odometer || 0),
+      notes: form.notes?.trim() || null,
+      status: 'Activa',
+      created_by: currentProfile?.id || null
+    });
+    if (error) throw error;
+
+    await loadOperationalDataFromSupabase({ silent: true });
+    event.currentTarget.reset();
+    closeModal(q('assignmentModal'));
+    toast(`Asignación creada en Supabase: ${driver.name} → ${vehicle.plate}.`);
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'No se pudo crear la asignación.');
+  }
 });
 
 q('preUseEditForm').addEventListener('submit', async (event) => {
@@ -1691,84 +2463,226 @@ q('preUseEditForm').addEventListener('submit', async (event) => {
 
 q('documentForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = formObject(event.currentTarget);
-  const file = event.currentTarget.elements.file.files[0];
-  const today = new Date();
-  const expiry = new Date(`${form.expiry}T12:00:00`);
-  const days = Math.ceil((expiry - today) / 86400000);
-  const status = days < 0 ? 'Vencido' : days <= 30 ? 'Por vencer' : 'Vigente';
-  const id = nextId(data.documents);
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
+  const formElement = event.currentTarget;
+  const form = formObject(formElement);
+  const file = formElement.elements.file.files[0];
+  const vehicleId = String(form.vehicle || '');
+  const vehicle = vehicleById(vehicleId);
+  if (!vehicle) { toast('Selecciona una unidad válida.'); return; }
+
+  let uploadedPath = null;
   try {
-    const fileStorageKey = file ? await saveLocalFile(file, `document-${id}`) : null;
-    data.documents.push({ id, vehicleId: Number(form.vehicle), type: form.type, issued: form.issued, expiry: form.expiry, file: file?.name || 'Sin archivo', mimeType: file?.type || '', fileStorageKey, status });
-    saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('documentModal')); toast('Documento registrado correctamente.');
-  } catch (error) { toast(error.message || 'No se pudo guardar el documento.'); }
+    if (file) {
+      uploadedPath = await uploadSupabaseFile(
+        'vehicle-documents',
+        file,
+        `${vehicle.plate}/${form.type}`
+      );
+    }
+
+    const { error } = await supabaseClient.from('vehicle_documents').insert({
+      vehicle_id: vehicleId,
+      document_type: form.type,
+      issue_date: form.issued || null,
+      expiry_date: form.expiry || null,
+      file_path: uploadedPath,
+      created_by: currentProfile?.id || null
+    });
+    if (error) throw error;
+
+    await loadOperationalDataFromSupabase({ silent: true });
+    formElement.reset();
+    closeModal(q('documentModal'));
+    toast('Documento guardado en Supabase.');
+  } catch (error) {
+    console.error(error);
+    if (uploadedPath) await removeSupabaseFile('vehicle-documents', uploadedPath);
+    toast(error.message || 'No se pudo guardar el documento.');
+  }
 });
 
 q('incidentForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = formObject(event.currentTarget);
-  const file = event.currentTarget.elements.file.files[0];
-  const id = nextId(data.incidents);
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
+  const formElement = event.currentTarget;
+  const form = formObject(formElement);
+  const file = formElement.elements.file.files[0];
+  const vehicleId = String(form.vehicle || '');
+  const vehicle = vehicleById(vehicleId);
+  if (!vehicle) { toast('Selecciona una unidad válida.'); return; }
+
+  const assignment = findAssignmentAtDate(vehicleId, form.date);
+  let uploadedPath = null;
+
   try {
-    const fileStorageKey = file ? await saveLocalFile(file, `incident-${id}`) : null;
-    const vehicleId = Number(form.vehicle);
-    const assignment = findAssignmentAtDate(vehicleId, form.date);
-    data.incidents.push({
-      id,
-      vehicleId,
-      assignmentId: assignment?.id || null,
-      responsibleDriverId: assignment?.driverId || null,
-      responsibleName: assignment ? assignmentDriverName(assignment) : '',
-      responsibleDni: assignment ? assignmentDriverDni(assignment) : '',
-      responsibleTeam: assignment ? (assignment.teamSnapshot || assignment.team || '') : '',
-      responsibleZone: assignment ? (assignment.zoneSnapshot || assignment.zone || '') : '',
-      assignmentStart: assignment?.date || '',
-      assignmentEnd: assignment ? (assignmentEndDate(assignment) || '') : '',
-      type: form.type,
-      date: form.date,
+    if (file) {
+      uploadedPath = await uploadSupabaseFile(
+        'incident-evidence',
+        file,
+        `${vehicle.plate}/${form.date || 'sin-fecha'}`
+      );
+    }
+
+    const { data: inserted, error } = await supabaseClient.from('incidents').insert({
+      vehicle_id: vehicleId,
+      assignment_id: assignment?.id || null,
+      driver_id: assignment?.driverId || null,
+      incident_type: form.type,
       severity: form.severity,
+      incident_at: new Date(`${form.date}T12:00:00`).toISOString(),
+      location: vehicle.city || null,
       description: form.description.trim(),
+      can_continue: form.severity !== 'Crítica',
       status: 'Abierto',
-      evidenceFile: file?.name || '',
-      fileStorageKey
-    });
-    saveData(); renderAll(); event.currentTarget.reset(); updateIncidentResponsiblePreview(); closeModal(q('incidentModal')); toast(assignment ? `Incidente registrado. Responsable: ${assignmentDriverName(assignment)}.` : 'Incidente registrado sin asignación activa para esa fecha.');
-  } catch (error) { toast(error.message || 'No se pudo guardar el incidente.'); }
+      created_by: currentProfile?.id || null
+    }).select('id').single();
+    if (error) throw error;
+
+    if (file && uploadedPath) {
+      await insertAttachment({
+        entityType: 'incident',
+        entityId: inserted.id,
+        category: 'Evidencia',
+        bucket: 'incident-evidence',
+        path: uploadedPath,
+        file
+      });
+    }
+
+    await loadOperationalDataFromSupabase({ silent: true });
+    formElement.reset();
+    updateIncidentResponsiblePreview();
+    closeModal(q('incidentModal'));
+    toast(assignment
+      ? `Incidente registrado. Responsable: ${assignmentDriverName(assignment)}.`
+      : 'Incidente registrado sin asignación para esa fecha.');
+  } catch (error) {
+    console.error(error);
+    if (uploadedPath) await removeSupabaseFile('incident-evidence', uploadedPath);
+    toast(error.message || 'No se pudo guardar el incidente.');
+  }
 });
 
 q('maintenanceForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = formObject(event.currentTarget);
-  const vehicleId = Number(form.vehicle);
-  const file = event.currentTarget.elements.file.files[0];
-  const id = nextId(data.maintenance);
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
+  const formElement = event.currentTarget;
+  const form = formObject(formElement);
+  const file = formElement.elements.file.files[0];
+  const vehicleId = String(form.vehicle || '');
+  const vehicle = vehicleById(vehicleId);
+  if (!vehicle) { toast('Selecciona una unidad válida.'); return; }
+
+  let uploadedPath = null;
   try {
-    const fileStorageKey = file ? await saveLocalFile(file, `maintenance-${id}`) : null;
-    data.maintenance.push({ id, vehicleId, type: form.type, workshop: form.workshop.trim(), entry: form.entry, exit: form.exit, cost: Number(form.cost || 0), description: form.description.trim(), status: 'Programado', evidenceFile: file?.name || '', fileStorageKey });
-    recalculateVehicleFromOperations(vehicleId); saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('maintenanceModal')); toast('Mantenimiento registrado.');
-  } catch (error) { toast(error.message || 'No se pudo guardar el mantenimiento.'); }
+    if (file) {
+      uploadedPath = await uploadSupabaseFile(
+        'maintenance-evidence',
+        file,
+        `${vehicle.plate}/${form.entry || 'sin-fecha'}`
+      );
+    }
+
+    const { data: inserted, error } = await supabaseClient.from('maintenance_records').insert({
+      vehicle_id: vehicleId,
+      maintenance_type: form.type,
+      workshop: form.workshop.trim(),
+      entry_date: form.entry,
+      expected_exit_date: form.exit || null,
+      entry_odometer: Number(vehicle.odometer || 0),
+      work_description: form.description.trim(),
+      estimated_cost: Number(form.cost || 0),
+      actual_cost: 0,
+      status: 'Programado',
+      created_by: currentProfile?.id || null
+    }).select('id').single();
+    if (error) throw error;
+
+    if (file && uploadedPath) {
+      await insertAttachment({
+        entityType: 'maintenance',
+        entityId: inserted.id,
+        category: 'Evidencia',
+        bucket: 'maintenance-evidence',
+        path: uploadedPath,
+        file
+      });
+    }
+
+    await loadOperationalDataFromSupabase({ silent: true });
+    formElement.reset();
+    closeModal(q('maintenanceModal'));
+    toast('Mantenimiento registrado en Supabase.');
+  } catch (error) {
+    console.error(error);
+    if (uploadedPath) await removeSupabaseFile('maintenance-evidence', uploadedPath);
+    toast(error.message || 'No se pudo guardar el mantenimiento.');
+  }
 });
 
 q('returnForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = formObject(event.currentTarget);
+  if (!supabaseClient) { toast('No existe conexión con Supabase.'); return; }
+  const formElement = event.currentTarget;
+  const form = formObject(formElement);
   const assignment = assignmentById(form.assignment);
   if (!assignment) { toast('Selecciona una asignación válida.'); return; }
   const vehicle = vehicleById(assignment.vehicleId);
-  if (Number(form.odometer) < Number(vehicle?.odometer || assignment.odometer)) { toast('El odómetro final no puede ser menor al actual.'); return; }
-  const id = nextId(data.returns);
-  const files = [...event.currentTarget.elements.files.files];
+  if (!vehicle) { toast('No se encontró la unidad de esta asignación.'); return; }
+  if (Number(form.odometer) < Number(vehicle.odometer || assignment.odometer)) {
+    toast('El odómetro final no puede ser menor al actual.');
+    return;
+  }
+
+  const files = [...formElement.elements.files.files];
+  const uploaded = [];
+
   try {
-    const fileStorageKeys = [];
-    for (let index = 0; index < files.length; index += 1) {
-      fileStorageKeys.push(await saveLocalFile(files[index], `return-${id}-${index}`));
+    for (const file of files) {
+      const path = await uploadSupabaseFile(
+        'vehicle-photos',
+        file,
+        `devoluciones/${vehicle.plate}/${assignment.id}`
+      );
+      uploaded.push({ file, path });
     }
-    assignment.status = 'Cerrada'; assignment.returnedAt = form.date; assignment.returnOdometer = Number(form.odometer); assignment.returnLocation = form.location.trim(); assignment.returnCondition = form.condition; assignment.returnNotes = form.notes;
-    if (vehicle) { vehicle.odometer = Number(form.odometer); vehicle.city = form.location.trim(); vehicle.status = form.condition === 'Requiere mantenimiento' ? 'Mantenimiento' : 'Disponible'; }
-    data.returns.push({ id, assignmentId: assignment.id, requestDate: form.date, dueDate: form.date, location: form.location.trim(), emailEvidence: false, status: 'Devuelto', evidenceFiles: files.map((file) => file.name), fileStorageKeys });
-    saveData(); renderAll(); event.currentTarget.reset(); closeModal(q('returnModal')); toast('Devolución registrada y asignación cerrada.');
-  } catch (error) { toast(error.message || 'No se pudo guardar la devolución.'); }
+
+    const { data: inserted, error } = await supabaseClient.from('vehicle_returns').insert({
+      assignment_id: assignment.id,
+      request_date: form.date,
+      due_date: form.date,
+      return_date: form.date,
+      return_location: form.location.trim(),
+      final_odometer: Number(form.odometer || 0),
+      general_condition: form.condition,
+      fuel_level: form.fuel,
+      notes: form.notes?.trim() || null,
+      status: 'Devuelto',
+      created_by: currentProfile?.id || null
+    }).select('id').single();
+    if (error) throw error;
+
+    for (const item of uploaded) {
+      await insertAttachment({
+        entityType: 'return',
+        entityId: inserted.id,
+        category: 'Foto de devolución',
+        bucket: 'vehicle-photos',
+        path: item.path,
+        file: item.file
+      });
+    }
+
+    await loadOperationalDataFromSupabase({ silent: true });
+    formElement.reset();
+    closeModal(q('returnModal'));
+    toast('Devolución registrada en Supabase y asignación cerrada.');
+  } catch (error) {
+    console.error(error);
+    for (const item of uploaded) await removeSupabaseFile('vehicle-photos', item.path);
+    toast(error.message || 'No se pudo guardar la devolución.');
+  }
 });
 
 // Exportaciones
