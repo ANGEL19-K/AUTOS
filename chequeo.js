@@ -5,7 +5,6 @@ const message = document.getElementById('formMessage');
 const submitButton = document.getElementById('submitButton');
 const validateButton = document.getElementById('validateAssignmentButton');
 const assignmentResult = document.getElementById('assignmentResult');
-const manualNameField = document.getElementById('manualNameField');
 const driverNameInput = document.getElementById('driverName');
 const dniInput = document.getElementById('driverDni');
 const plateInput = document.getElementById('plate');
@@ -28,6 +27,7 @@ const CHECK_ITEMS = [
 
 let client = null;
 let validatedAssignment = null;
+let availableAssignments = [];
 let previewUrl = '';
 const issuePreviewUrls = new Map();
 
@@ -75,38 +75,108 @@ function updateResult(){
   resultBadge.classList.toggle('warn',result!=='Conforme');
 }
 
-function resetValidation(){validatedAssignment=null;assignmentResult.hidden=true;assignmentResult.innerHTML='';manualNameField.hidden=true;driverNameInput.required=false}
+function resetValidation(){
+  validatedAssignment=null;
+  availableAssignments=[];
+  plateInput.value='';
+  driverNameInput.value='';
+  assignmentResult.hidden=true;
+  assignmentResult.classList.remove('warning');
+  assignmentResult.innerHTML='';
+}
+
+function assignmentInfoHtml(row){
+  const vehicle=escapeHtml(row.vehicle_label||'Unidad asignada');
+  const team=escapeHtml(row.team||'Sin team');
+  const zone=escapeHtml(row.zone||'Sin zonal');
+  const start=escapeHtml(row.assignment_start||'fecha registrada');
+  const end=row.expected_return_date?` hasta ${escapeHtml(row.expected_return_date)}`:'';
+  return `<strong>${escapeHtml(row.driver_name||'Conductor')} · ${escapeHtml(row.plate||'')}</strong><span>${vehicle} · ${team} · ${zone}<br>Asignación vigente desde ${start}${end}.</span>`;
+}
+
+function applyAssignment(row){
+  validatedAssignment=row||null;
+  plateInput.value=cleanPlate(row?.plate||'');
+  driverNameInput.value=String(row?.driver_name||'').trim();
+}
+
+function renderMultipleAssignments(rows){
+  validatedAssignment=null;
+  plateInput.value='';
+  driverNameInput.value='';
+  assignmentResult.hidden=false;
+  assignmentResult.classList.remove('warning');
+  assignmentResult.innerHTML=`
+    <strong>Encontramos ${rows.length} vehículos asignados a tu DNI</strong>
+    <span>Selecciona la unidad que vas a utilizar para este chequeo.</span>
+    <label class="assignment-picker-label">Vehículo asignado
+      <select id="assignmentChoice" class="assignment-picker">
+        <option value="">Seleccionar unidad</option>
+        ${rows.map((row,index)=>`<option value="${index}">${escapeHtml(row.plate||'Sin placa')} · ${escapeHtml(row.vehicle_label||'Unidad')}</option>`).join('')}
+      </select>
+    </label>
+    <div id="selectedAssignmentInfo" class="selected-assignment-info" hidden></div>`;
+
+  const select=document.getElementById('assignmentChoice');
+  const info=document.getElementById('selectedAssignmentInfo');
+  select?.addEventListener('change',()=>{
+    const index=Number(select.value);
+    if(select.value===''||!Number.isInteger(index)||!rows[index]){
+      applyAssignment(null);
+      if(info){info.hidden=true;info.innerHTML=''}
+      return;
+    }
+    const row=rows[index];
+    applyAssignment(row);
+    if(info){info.hidden=false;info.innerHTML=assignmentInfoHtml(row)}
+    showMessage('Asignación validada correctamente.','success');
+  });
+}
 
 async function validateAssignment(){
   showMessage('');
-  const dni=cleanDni(dniInput.value); const plate=cleanPlate(plateInput.value);
-  dniInput.value=dni; plateInput.value=plate;
+  const dni=cleanDni(dniInput.value);
+  dniInput.value=dni;
+  resetValidation();
   if(dni.length!==8){showMessage('Ingresa un DNI válido de 8 dígitos.');return}
-  if(plate.length<5){showMessage('Ingresa una placa válida.');return}
-  validateButton.disabled=true; validateButton.textContent='Validando...';
+  validateButton.disabled=true;
+  validateButton.textContent='Buscando asignación...';
   try{
-    const {data,error}=await client.rpc('resolve_preuse_assignment',{p_dni:dni,p_plate:plate});
+    const {data,error}=await client.rpc('resolve_preuse_assignments_by_dni',{p_dni:dni});
     if(error) throw error;
-    const row=Array.isArray(data)?data[0]:data;
-    if(row){
-      validatedAssignment=row;
-      driverNameInput.value=row.driver_name||'';
-      manualNameField.hidden=true; driverNameInput.required=false;
-      assignmentResult.hidden=false; assignmentResult.classList.remove('warning');
-      assignmentResult.innerHTML=`<strong>${escapeHtml(row.driver_name||'Conductor')} · ${escapeHtml(row.plate||plate)}</strong><span>${escapeHtml(row.vehicle_label||'Unidad asignada')} · ${escapeHtml(row.team||'Sin team')} · ${escapeHtml(row.zone||'Sin zonal')}<br>Asignación validada desde ${escapeHtml(row.assignment_start||'fecha registrada')}.</span>`;
-    }else{
-      validatedAssignment=null;
-      manualNameField.hidden=false; driverNameInput.required=true;
-      assignmentResult.hidden=false; assignmentResult.classList.add('warning');
-      assignmentResult.innerHTML='<strong>No se encontró la asignación en Supabase</strong><span>Puedes continuar ingresando tu nombre completo. El registro llegará al administrador marcado como “No validado” para su revisión.</span>';
-      driverNameInput.focus();
+    const rows=Array.isArray(data)?data.filter(Boolean):(data?[data]:[]);
+    availableAssignments=rows;
+
+    if(rows.length===1){
+      const row=rows[0];
+      applyAssignment(row);
+      assignmentResult.hidden=false;
+      assignmentResult.classList.remove('warning');
+      assignmentResult.innerHTML=assignmentInfoHtml(row);
+      showMessage('Asignación validada correctamente.','success');
+      return;
     }
+
+    if(rows.length>1){
+      renderMultipleAssignments(rows);
+      showMessage('Tu DNI tiene más de una unidad activa. Selecciona cuál vas a utilizar.','success');
+      return;
+    }
+
+    assignmentResult.hidden=false;
+    assignmentResult.classList.add('warning');
+    assignmentResult.innerHTML='<strong>No tienes una asignación activa</strong><span>No se encontró un vehículo vigente asociado a este DNI. Comunícate con el administrador de flota antes de realizar el chequeo.</span>';
+    showMessage('No se encontró una unidad asignada a este DNI.');
   }catch(error){
-    validatedAssignment=null;
-    manualNameField.hidden=false; driverNameInput.required=true;
-    assignmentResult.hidden=false; assignmentResult.classList.add('warning');
-    assignmentResult.innerHTML='<strong>No fue posible validar la asignación</strong><span>Completa tu nombre y continúa. El administrador podrá revisar el registro.</span>';
-  }finally{validateButton.disabled=false;validateButton.textContent='Validar asignación'}
+    console.error(error);
+    assignmentResult.hidden=false;
+    assignmentResult.classList.add('warning');
+    assignmentResult.innerHTML='<strong>No fue posible consultar tu asignación</strong><span>Verifica la conexión e inténtalo nuevamente. Si continúa, comunícate con el administrador.</span>';
+    showMessage('No se pudo validar la asignación. Intenta nuevamente.');
+  }finally{
+    validateButton.disabled=false;
+    validateButton.textContent='Validar mi asignación';
+  }
 }
 
 async function uploadEvidence(file,dni,plate,category='panoramica'){
@@ -148,15 +218,16 @@ function validateIssues(){
 
 async function submitCheck(event){
   event.preventDefault(); showMessage('');
-  const dni=cleanDni(dniInput.value); const plate=cleanPlate(plateInput.value);
-  dniInput.value=dni; plateInput.value=plate;
+  const dni=cleanDni(dniInput.value);
+  dniInput.value=dni;
+  const plate=cleanPlate(validatedAssignment?.plate||plateInput.value);
   const odometer=Number(document.getElementById('odometer').value);
   const photo=photoInput.files[0]; const result=checkResult();
   const generalNotes=document.getElementById('notes').value.trim();
-  const driverName=(validatedAssignment?.driver_name||driverNameInput.value||'').trim();
+  const driverName=String(validatedAssignment?.driver_name||driverNameInput.value||'').trim();
   if(dni.length!==8){showMessage('Ingresa un DNI válido de 8 dígitos.');return}
-  if(plate.length<5){showMessage('Ingresa una placa válida.');return}
-  if(!validatedAssignment&&!driverName){manualNameField.hidden=false;driverNameInput.required=true;showMessage('Ingresa tu nombre completo o valida primero la asignación.');return}
+  if(!validatedAssignment){showMessage('Primero valida tu DNI y confirma la unidad asignada.');dniInput.focus();return}
+  if(plate.length<5||!driverName){showMessage('La asignación encontrada está incompleta. Comunícate con el administrador.');return}
   if(!Number.isFinite(odometer)||odometer<0){showMessage('Ingresa el odómetro actual.');return}
   if(!photo){showMessage('La foto panorámica del vehículo es obligatoria.');return}
   if(!validateIssues()) return;
@@ -215,7 +286,7 @@ function resetForm(){
 }
 
 dniInput.addEventListener('input',()=>{dniInput.value=cleanDni(dniInput.value);resetValidation()});
-plateInput.addEventListener('input',()=>{plateInput.value=cleanPlate(plateInput.value);resetValidation()});
+dniInput.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();validateAssignment()}});
 validateButton.addEventListener('click',validateAssignment);
 form.addEventListener('change',event=>{
   if(event.target.matches('.check-grid select')){

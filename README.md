@@ -93,3 +93,15 @@ Esta versión incorpora una página independiente para el personal:
 3. La página para el personal quedará disponible en `/chequeo.html`.
 
 Los registros enviados por el personal se almacenan en Supabase y el administrador puede revisarlos y editarlos desde FleetGuard.
+
+## FleetGuard V12 - Evidencias por no conformidad
+
+Cada punto marcado como **No conforme** solicita una descripción y una fotografía de evidencia obligatorias. La foto panorámica general continúa siendo independiente y obligatoria.
+
+## FleetGuard V13 - Identificación solo por DNI
+
+La página `chequeo.html` ahora solicita únicamente el DNI del trabajador. Al pulsar **Validar mi asignación**, FleetGuard consulta la asignación activa en Supabase y obtiene automáticamente el nombre del conductor, la placa, la unidad, el team y la zonal.
+
+Si existe más de una unidad activa para el mismo DNI, se muestra un selector limitado a esas unidades. Si no existe una asignación activa, el formulario no permite registrar el chequeo.
+
+Para actualizar una instalación V11/V12 ya existente, ejecuta `08_preuse_dni_lookup.sql` en **Supabase → SQL Editor** antes de publicar `chequeo.html` y `chequeo.js`.

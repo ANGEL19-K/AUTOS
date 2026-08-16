@@ -33,26 +33,19 @@
         <section class="form-section">
           <div class="section-title">
             <span>1</span>
-            <div><strong>Identificación</strong><small>Ingresa tus datos y la placa que vas a utilizar.</small></div>
+            <div><strong>Identificación</strong><small>Ingresa únicamente tu DNI. FleetGuard buscará tu vehículo asignado automáticamente.</small></div>
           </div>
 
-          <div class="grid two">
-            <label>DNI
-              <input id="driverDni" name="driverDni" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" placeholder="12345678" required />
-            </label>
-            <label>Placa
-              <input id="plate" name="plate" maxlength="12" autocomplete="off" placeholder="ABC-123" required />
-            </label>
-          </div>
+          <label>DNI
+            <input id="driverDni" name="driverDni" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" placeholder="12345678" autocomplete="off" required />
+          </label>
 
-          <button id="validateAssignmentButton" class="secondary-button full-button" type="button">Validar asignación</button>
+          <input id="plate" name="plate" type="hidden" />
+          <input id="driverName" name="driverName" type="hidden" />
+
+          <button id="validateAssignmentButton" class="secondary-button full-button" type="button">Validar mi asignación</button>
 
           <div id="assignmentResult" class="assignment-result" hidden></div>
-
-          <label id="manualNameField" hidden>Nombre completo
-            <input id="driverName" name="driverName" maxlength="120" placeholder="Nombres y apellidos" />
-            <small>Solo se solicita cuando la asignación todavía no está registrada en Supabase.</small>
-          </label>
         </section>
 
         <section class="form-section">
